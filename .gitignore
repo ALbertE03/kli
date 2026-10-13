@@ -11,4 +11,5 @@ pnpm-debug.log*
 docs/
 examples/
 .scripts/
+!.github/workflows/
 .github
