@@ -31,6 +31,11 @@ const POSITION_ORDER: PromptPosition[] = [
 export class PromptBuilder {
   private cache = new Map<string, string>();
   private generation = 0;
+  /** Max entries before evicting the oldest (LRU-like). */
+  private readonly maxCacheSize = 512;
+  /** Time-to-live in ms (default 5 min). */
+  private readonly ttlMs = 5 * 60 * 1000;
+  private readonly cacheTimestamps = new Map<string, number>();
 
   /**
    * Build the full system prompt. Results are memoized per context hash.
@@ -42,17 +47,35 @@ export class PromptBuilder {
     visibleToolNames: Set<string>,
   ): Promise<string> {
     const key = this.hash(ctx, visibleToolNames);
+
+    // Evict expired entries and enforce max size
+    const now = Date.now();
+    for (const [k, ts] of this.cacheTimestamps) {
+      if (now - ts > this.ttlMs) {
+        this.cache.delete(k);
+        this.cacheTimestamps.delete(k);
+      }
+    }
+    while (this.cache.size > this.maxCacheSize) {
+      const oldest = this.cacheTimestamps.entries().next().value as [string, number] | undefined;
+      if (!oldest) break;
+      this.cache.delete(oldest[0]);
+      this.cacheTimestamps.delete(oldest[0]);
+    }
+
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
 
     const prompt = await this.assemble(fragments, ctx, visibleToolNames);
     this.cache.set(key, prompt);
+    this.cacheTimestamps.set(key, now);
     return prompt;
   }
 
   /** Invalidate after mode / toolset / skill changes. */
   clearCache(): void {
     this.cache.clear();
+    this.cacheTimestamps.clear();
     this.generation++;
   }
 

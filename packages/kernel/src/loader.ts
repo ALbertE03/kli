@@ -24,6 +24,7 @@ import type {
   PluginManifest,
 } from "@kli/api";
 import { BudgetSchema } from "@kli/api";
+import { resolvePath } from "./paths.js";
 
 export class PluginLoader {
   private readonly cwd: string;
@@ -142,7 +143,7 @@ export class PluginLoader {
       emit: (e: Event) => this.bus.emit(e),
       secrets: this.secrets,
       config: this.config,
-      resolve: (p: string) => resolveWithRoot(p, this.workspaceRoot),
+      resolve: (p: string) => resolvePath(p, this.workspaceRoot),
     };
   }
 
@@ -189,25 +190,4 @@ function toImportUrl(spec: string, cwd: string): string {
   const require = createRequire(import.meta.url);
   const resolved = require.resolve(spec);
   return new URL(resolved, "file:///").href;
-}
-
-class PathViolationError extends Error {
-  override readonly name = "PathViolationError";
-  constructor(input: string, root: string) {
-    super(`Path "${input}" escapes workspaceRoot "${root}"`);
-  }
-}
-
-function resolveWithRoot(p: string, root: string): string {
-  if (p.includes("..")) {
-    throw new PathViolationError(p, root);
-  }
-  const normalized = p.replace(/\/+/g, "/").replace(/\/$/, "");
-  const base = root.endsWith("/") ? root : `${root}/`;
-  const resolved = (base + normalized).replace(/\/+/g, "/");
-  const boundary = root.endsWith("/") ? root : `${root}/`;
-  if (resolved !== root && !resolved.startsWith(boundary)) {
-    throw new PathViolationError(p, root);
-  }
-  return resolved;
 }

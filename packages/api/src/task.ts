@@ -3,6 +3,7 @@
  */
 
 import { z } from "zod";
+import type { Mode } from "./mode.js";
 
 export const ToolCallSchema = z.object({
   id: z.string(),
@@ -31,7 +32,7 @@ export type Message = z.infer<typeof MessageSchema>;
 
 export interface TaskState {
   readonly taskId: string;
-  readonly mode: string;
+  readonly mode: Mode;
   readonly messages: readonly Message[];
   readonly budget: {
     tokensTotal: number;
