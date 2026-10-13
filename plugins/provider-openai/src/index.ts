@@ -1,38 +1,62 @@
 /**
- * @kli/provider-openai — OpenAI API provider
+ * @kli/provider-openai — OpenAI-compatible provider
+ *
+ * Connects to any OpenAI-compatible API (OpenAI, Ollama, LocalAI, vLLM, etc.)
+ *
+ * Usage:
+ *   const provider = new OpenAiProvider({
+ *     baseURL: "http://127.0.0.1:31415/v1",
+ *     model: "llama-3",
+ *     apiKey: "any-key", // local servers often don't require auth
+ *   });
  */
 import OpenAI from "openai";
-import type { HarnessPlugin, Provider, TaskState, ToolDefinition, StepResult } from "@kli/api";
+import type {
+  HarnessPlugin,
+  Provider,
+  TaskState,
+  ToolDefinition,
+  StepResult,
+} from "@kli/api";
 
-export const plugin: HarnessPlugin = {
-  manifest: {
-    id: "kli.provider.openai",
-    version: "1.0.0",
-    apiVersion: "1",
-    kind: ["provider"] as Array<"tool" | "provider" | "context" | "policy">,
-    entrypoint: "./dist/index.js",
-    capabilities: ["model.call"],
-    priority: 0,
-    requires: ["kernel>=0.5 <1.0"],
-  },
-  register(_registry) {
-    // Provider is instantiated at runtime
-  },
-};
-
-export default plugin;
+export interface OpenAiProviderOptions {
+  apiKey?: string;
+  model?: string;
+  baseURL?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
 
 export class OpenAiProvider implements Provider {
   readonly name = "openai";
   private readonly client: OpenAI;
-  private readonly model: string;
+  readonly model: string;
+  private readonly temperature: number;
+  private readonly maxTokens: number;
 
-  constructor(apiKey?: string, model = "gpt-4o") {
-    this.client = new OpenAI({ apiKey: apiKey ?? process.env.OPENAI_API_KEY });
-    this.model = model;
+  constructor(opts: OpenAiProviderOptions = {}) {
+    this.model = opts.model ?? process.env.KLI_MODEL ?? "gpt-4o";
+    this.temperature = opts.temperature ?? 0.7;
+    this.maxTokens = opts.maxTokens ?? 4096;
+
+    const clientOpts: any = {
+      apiKey: opts.apiKey ?? process.env.OPENAI_API_KEY ?? "sk-any-key",
+      maxLength: this.maxTokens,
+    };
+
+    if (opts.baseURL) {
+      clientOpts.baseURL = opts.baseURL;
+    }
+
+    this.client = new OpenAI(clientOpts);
   }
 
-  async step(state: TaskState, tools: readonly ToolDefinition[], systemPrompt: string, signal: AbortSignal): Promise<StepResult> {
+  async step(
+    state: TaskState,
+    tools: readonly ToolDefinition[],
+    systemPrompt: string,
+    signal: AbortSignal,
+  ): Promise<StepResult> {
     const toolDefs = tools.map((t) => ({
       type: "function" as const,
       function: {
@@ -42,7 +66,6 @@ export class OpenAiProvider implements Provider {
       },
     }));
 
-    // Convert messages to OpenAI format
     const messages: any[] = [
       { role: "system", content: systemPrompt },
       ...state.messages.map((m) => {
@@ -58,7 +81,8 @@ export class OpenAiProvider implements Provider {
           model: this.model,
           messages,
           tools: toolDefs.length > 0 ? toolDefs : undefined,
-          temperature: 0.7,
+          temperature: this.temperature,
+          max_tokens: this.maxTokens,
         },
         { signal },
       );
@@ -71,14 +95,12 @@ export class OpenAiProvider implements Provider {
       const msg = choice.message;
       const tokensIn = response.usage?.prompt_tokens ?? 0;
       const tokensOut = response.usage?.completion_tokens ?? 0;
-      const cost = estimateCost(this.model, tokensIn, tokensOut);
+      const cost = this.estimateCost(tokensIn, tokensOut);
 
-      // Map finish reason
       let finishReason: StepResult["finishReason"] = "stop";
       if (choice.finish_reason === "tool_calls") finishReason = "tool_use";
       else if (choice.finish_reason === "length" || choice.finish_reason === "content_filter") finishReason = "error";
 
-      // Extract tool calls
       const toolCalls = msg?.tool_calls?.map((tc: any) => ({
         id: tc.id,
         name: tc.function.name,
@@ -95,7 +117,7 @@ export class OpenAiProvider implements Provider {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`OpenAI error: ${msg}`);
+      console.error(`OpenAI provider error: ${msg}`);
       return { finishReason: "error", tokensIn: 0, tokensOut: 0, cost: 0 };
     }
   }
@@ -109,12 +131,19 @@ export class OpenAiProvider implements Provider {
   }
 }
 
-function estimateCost(model: string, inTokens: number, outTokens: number): number {
-  const prices: Record<string, { input: number; output: number }> = {
-    "gpt-4o": { input: 0.0000025, output: 0.00001 },
-    "gpt-4o-mini": { input: 0.00000015, output: 0.0000006 },
-  };
-  const p = prices[model];
-  if (!p) return inTokens * 0.0000025 + outTokens * 0.00001;
-  return inTokens * p.input + outTokens * p.output;
-}
+export const plugin: HarnessPlugin = {
+  manifest: {
+    id: "kli.provider.openai",
+    version: "2.0.0",
+    apiVersion: "1",
+    kind: ["provider"],
+    entrypoint: "./dist/index.js",
+    capabilities: ["model.call"],
+    priority: 0,
+  },
+  register(_registry) {
+    // Provider instantiated at runtime
+  },
+};
+
+export default plugin;

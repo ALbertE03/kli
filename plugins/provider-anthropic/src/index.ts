@@ -38,7 +38,7 @@ export class AnthropicProvider implements Provider {
       tools.map((t) => ({
         name: t.name,
         description: t.description,
-        input_schema: { type: "object", properties: {} } as Record<string, unknown>,
+        input_schema: (t.schema as any)?.jsonSchema ?? (t.schema as any)?.toJSONSchema() ?? { type: "object", properties: {} },
       }));
 
     // Convert messages
@@ -63,7 +63,7 @@ export class AnthropicProvider implements Provider {
 
       const tokensIn = response.usage?.input_tokens ?? 0;
       const tokensOut = response.usage?.output_tokens ?? 0;
-      const cost = estimateCost(this.model, tokensIn, tokensOut);
+      const cost = this.estimateCost(tokensIn, tokensOut);
 
       // Extract tool calls
       const toolCalls = ((response.content as any[]) ?? [])
@@ -102,8 +102,4 @@ export class AnthropicProvider implements Provider {
   estimateCost(tokensIn: number, tokensOut: number): number {
     return tokensIn * 0.000003 + tokensOut * 0.000015;
   }
-}
-
-function estimateCost(_model: string, inTokens: number, outTokens: number): number {
-  return inTokens * 0.000003 + outTokens * 0.000015;
 }
