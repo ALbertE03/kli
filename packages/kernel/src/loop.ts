@@ -156,17 +156,28 @@ export class Loop {
           break;
         }
 
-        const calls = result.toolCalls ?? [];
+        const calls = [...(result.toolCalls ?? [])];
         if (calls.length === 0) {
           state = this.markDone(state);
           break;
         }
 
-        // 2e: execute tool calls sequentially
-        for (const tc of calls) {
-          const r = await this.runToolCall(tc, state, registry, bus, maxRetries, signal);
-          state = r.state;
-          toolCalls.push(r.summary);
+        // 2e: execute tool calls — non-exclusive in parallel, exclusive sequentially
+        const parallelGroups = this.groupCallsByExclusivity(calls, visibleTools);
+        for (const group of parallelGroups) {
+          if (group.length === 1) {
+            const r = await this.runToolCall(group[0]!, state, registry, bus, maxRetries, signal);
+            state = r.state;
+            toolCalls.push(r.summary);
+          } else {
+            const results = await Promise.all(
+              group.map((tc) => this.runToolCall(tc, state, registry, bus, maxRetries, signal)),
+            );
+            for (const r of results) {
+              state = r.state;
+              toolCalls.push(r.summary);
+            }
+          }
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -196,6 +207,47 @@ export class Loop {
   /* ----------------------------------------------------- *
    * Tool execution
    * ----------------------------------------------------- */
+
+  /**
+   * Group tool calls so that exclusive tools run sequentially and
+   * non-exclusive tools run in parallel batches.
+   */
+  private groupCallsByExclusivity(
+    calls: readonly { id: string; name: string; args: Record<string, unknown> }[],
+    visibleTools: ToolDefinition[],
+  ): Array<{ id: string; name: string; args: Record<string, unknown> }[]> {
+    const toolMap = new Map(visibleTools.map((t) => [t.name, t]));
+    const groups: Array<Array<{ id: string; name: string; args: Record<string, unknown> }>> = [];
+    let currentGroup: typeof groups[0] = [];
+    let hasExclusive = false;
+
+    for (const tc of calls) {
+      const tool = toolMap.get(tc.name);
+      const isExclusive = tool?.exclusive === true;
+
+      if (isExclusive) {
+        // Flush current group, start a new one containing just this call
+        if (currentGroup.length > 0) {
+          groups.push(currentGroup);
+          currentGroup = [];
+        }
+        groups.push([tc]);
+      } else if (hasExclusive) {
+        // After an exclusive call, start fresh group
+        groups.push(currentGroup);
+        currentGroup = [tc];
+        hasExclusive = false;
+      } else {
+        currentGroup.push(tc);
+      }
+    }
+
+    if (currentGroup.length > 0) {
+      groups.push(currentGroup);
+    }
+
+    return groups.length > 0 ? groups : [[...calls]];
+  }
 
   private async runToolCall(
     tc: { id: string; name: string; args: Record<string, unknown> },
@@ -405,7 +457,7 @@ export class Loop {
         deadlineMs: this.opts.budget.deadlineMs,
       },
       graphSummary: this.opts.graph?.summary,
-      env: process.env as Record<string, string>,
+      env: Object.freeze(sanitizeEnv()),
       userMessage,
     };
   }
@@ -458,4 +510,23 @@ function hashArgs(args: unknown): string {
     h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
   }
   return Math.abs(h).toString(16);
+}
+
+/** Secrets that must never be exposed in prompts or logs. */
+const SECRET_KEYS = new Set([
+  "OPENAI_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "BRAVE_API_KEY",
+  "GITHUB_TOKEN",
+  "SLACK_TOKEN",
+  "AWS_ACCESS_KEY_ID",
+  "AWS_SECRET_ACCESS_KEY",
+]);
+
+function sanitizeEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined && !SECRET_KEYS.has(k)) out[k] = v;
+  }
+  return out;
 }

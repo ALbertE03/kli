@@ -19,7 +19,7 @@ export { GraphCache } from "./graph-cache.js";
 export type { GraphCacheData } from "./graph-cache.js";
 export { Loop } from "./loop.js";
 export type { LoopOptions, LoopResult } from "./loop.js";
-export type { KernelBootOptions, TaskRunOptions, TaskRunResult } from "./kernel-types.js";
+export type { KernelBootOptions, TaskRunOptions, TaskRunResult, SessionMetadata } from "./kernel-types.js";
 export { hasCapabilities, CapabilityError } from "./capability-gate.js";
 export { resolvePath, PathViolationError } from "./paths.js";
 export type { Provider, StepResult, ToolInvocation } from "./provider.js";

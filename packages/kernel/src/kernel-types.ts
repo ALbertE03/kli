@@ -13,6 +13,17 @@ export interface KernelBootOptions {
   logger?: Logger;
   config?: Record<string, unknown>;
   secrets?: Record<string, string>;
+  sessionId?: string;
+}
+
+export interface SessionMetadata {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  workspaceRoot: string;
+  mode: Mode;
+  pluginCount: number;
+  taskId: string;
 }
 
 export interface TaskRunOptions {
