@@ -8,14 +8,14 @@ const capabilities: Capability[] = ["net.http"];
 
 const WebSearchSchema = z.object({
   query: z.string(),
-  maxResults: z.number().int().min(1).max(20).default(5),
-  recency: z.enum(["any", "day", "week", "month"]).default("any"),
+  maxResults: z.number().int().min(1).max(20),
+  recency: z.enum(["any", "day", "week", "month"]),
   domains: z.array(z.string()).optional(),
 });
 
 const FetchUrlSchema = z.object({
   url: z.string().url(),
-  extract: z.enum(["markdown", "text", "html"]).default("markdown"),
+  extract: z.enum(["markdown", "text", "html"]),
 });
 
 export const plugin: HarnessPlugin = {
