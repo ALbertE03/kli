@@ -1,0 +1,212 @@
+/**
+ * Registry — central plugin registration surface.
+ *
+ * Conflict rule (§4.3): higher priority wins. Equal priority MUST throw
+ * ToolConflictError — never "last wins".
+ */
+
+import type {
+  Registry as IRegistry,
+  TaskRegistry,
+  PluginContext,
+  ToolDefinition,
+  Policy,
+  SkillManifest,
+  PromptFragment,
+  AstBackend,
+  Mode,
+} from "@kli/api";
+
+export class ToolConflictError extends Error {
+  override readonly name = "ToolConflictError";
+  constructor(
+    readonly toolName: string,
+    readonly sources: readonly string[],
+  ) {
+    super(
+      `Tool conflict for "${toolName}": equal priority from ${sources.join(", ")}`,
+    );
+  }
+}
+
+interface ToolEntry {
+  tool: ToolDefinition;
+  source: string;
+  priority: number;
+}
+
+interface PolicyEntry {
+  policy: Policy;
+  source: string;
+}
+
+interface SkillEntry {
+  skill: SkillManifest;
+  source: string;
+}
+
+interface FragmentEntry {
+  fragment: PromptFragment;
+  source: string;
+}
+
+export class Registry implements IRegistry {
+  private readonly tools = new Map<string, ToolEntry>();
+  private readonly policies: PolicyEntry[] = [];
+  private readonly skills: SkillEntry[] = [];
+  private readonly fragments: FragmentEntry[] = [];
+  private readonly backends: AstBackend[] = [];
+  private readonly mcpServers = new Map<string, ToolDefinition[]>();
+  /** mode → visibility filter, installed by ModePolicy plugins. */
+  private readonly modeFilters = new Map<
+    string,
+    (tool: ToolDefinition, ctx: PluginContext) => boolean
+  >();
+
+  registerTool(tool: ToolDefinition, source: string, priority = 0): void {
+    const existing = this.tools.get(tool.name);
+    if (existing) {
+      if (existing.priority > priority) return; // higher already wins
+      if (existing.priority === priority) {
+        throw new ToolConflictError(tool.name, [existing.source, source]);
+      }
+    }
+    this.tools.set(tool.name, { tool, source, priority });
+  }
+
+  registerPolicy(policy: Policy, source: string): void {
+    this.policies.push({ policy, source });
+  }
+
+  registerSkill(skill: SkillManifest, source: string): void {
+    this.skills.push({ skill, source });
+  }
+
+  registerPromptFragment(f: PromptFragment, source: string): void {
+    this.fragments.push({ fragment: f, source });
+  }
+
+  registerBackend(b: AstBackend): void {
+    const dup = this.backends.some((x) => x.id === b.id);
+    if (dup) throw new Error(`Backend already registered: ${b.id}`);
+    this.backends.push(b);
+  }
+
+  registerMcpServer(name: string, tools: ToolDefinition[]): void {
+    this.mcpServers.set(name, tools);
+    for (const tool of tools) this.registerTool(tool, `mcp:${name}`);
+  }
+
+  /**
+   * Register the tool visibility filter for a mode. Installed by the mode
+   * plugin — the kernel itself never names a tool or a mode.
+   */
+  setModeFilter(
+    mode: Mode,
+    filter: (tool: ToolDefinition, ctx: PluginContext) => boolean,
+  ): void {
+    this.modeFilters.set(mode, filter);
+  }
+
+  get(name: string): ToolDefinition {
+    const entry = this.tools.get(name);
+    if (!entry) throw new Error(`Tool not found: ${name}`);
+    return entry.tool;
+  }
+
+  find(name: string): ToolDefinition | undefined {
+    return this.tools.get(name)?.tool;
+  }
+
+  toolsFor(mode: Mode, ctx: PluginContext): ToolDefinition[] {
+    const filter = this.modeFilters.get(mode);
+    const all = [...this.tools.values()].map((e) => e.tool);
+    if (!filter) return all;
+    return all.filter((t) => {
+      try {
+        return filter(t, ctx);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  mcpServerTools(name: string): ToolDefinition[] {
+    return this.mcpServers.get(name) ?? [];
+  }
+
+  snapshot(): TaskRegistry {
+    return new FrozenRegistry(
+      new Map(this.tools),
+      [...this.policies],
+      [...this.skills],
+      [...this.fragments],
+      [...this.backends],
+      new Map(this.modeFilters),
+    );
+  }
+}
+
+/** Immutable view handed to a single task (Rule #4). */
+class FrozenRegistry implements TaskRegistry {
+  readonly tools: ReadonlyMap<string, ToolDefinition>;
+  readonly backends: readonly AstBackend[];
+
+  constructor(
+    private readonly _entries: Map<string, ToolEntry>,
+    private readonly _policies: readonly PolicyEntry[],
+    private readonly _skills: readonly SkillEntry[],
+    private readonly _fragments: readonly FragmentEntry[],
+    backends: AstBackend[],
+    private readonly _modeFilters: ReadonlyMap<
+      string,
+      (tool: ToolDefinition, ctx: PluginContext) => boolean
+    >,
+  ) {
+    this.tools = new Map(
+      [..._entries.entries()].map(([k, v]) => [k, v.tool] as const),
+    ) as ReadonlyMap<string, ToolDefinition>;
+    this.backends = [...backends];
+  }
+
+  get policies(): readonly Policy[] {
+    return this._policies.map((e) => e.policy);
+  }
+  get skills(): readonly SkillManifest[] {
+    return this._skills.map((e) => e.skill);
+  }
+  get fragments(): readonly PromptFragment[] {
+    return this._fragments.map((e) => e.fragment);
+  }
+
+  get(name: string): ToolDefinition {
+    const tool = this.tools.get(name);
+    if (!tool) throw new Error(`Tool not found: ${name}`);
+    return tool;
+  }
+
+  find(name: string): ToolDefinition | undefined {
+    return this.tools.get(name);
+  }
+
+  toolsFor(mode: Mode, ctx: PluginContext): ToolDefinition[] {
+    const filter = this._modeFilters.get(mode);
+    const all = [...this.tools.values()];
+    if (!filter) return all;
+    return all.filter((t) => {
+      try {
+        return filter(t, ctx);
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  setModeFilter(
+    _mode: Mode,
+    _filter: (tool: ToolDefinition, ctx: PluginContext) => boolean,
+  ): void {
+    // Frozen registry — setModeFilter is not applicable after snapshot
+    throw new Error("Cannot set mode filter on frozen registry");
+  }
+}
