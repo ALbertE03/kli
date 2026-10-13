@@ -1,7 +1,7 @@
 /**
  * @kli/backend-config — config file backend (yaml, toml, json, etc.)
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AstBackend,
@@ -99,7 +99,6 @@ export class ConfigBackend implements AstBackend {
 }
 
 function findConfigFiles(root: string): string[] {
-  const { readdirSync, statSync } = require("node:fs");
   const files: string[] = [];
   function walk(dir: string) {
     try {
