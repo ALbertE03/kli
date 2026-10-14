@@ -208,6 +208,22 @@ importers:
         specifier: ^5.3.0
         version: 5.9.3
 
+  plugins/deep-search:
+    dependencies:
+      '@kli/api':
+        specifier: workspace:*
+        version: link:../../packages/api
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^20.11.0
+        version: 20.19.43
+      typescript:
+        specifier: ^5.3.0
+        version: 5.9.3
+
   plugins/mode-ask:
     dependencies:
       '@kli/api':

@@ -25,7 +25,7 @@ import type {
 
 const ReadFileSchema = z.object({
   /** Path relative to workspace root */
-  path: z.string().min(1),
+  path: z.string().min(1, "path is required"),
   /** 0-indexed start line (inclusive). Omit for full file. */
   start: z.number().int().min(0).optional(),
   /** 0-indexed end line (exclusive). Omit for EOF. */

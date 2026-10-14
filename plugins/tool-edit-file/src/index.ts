@@ -28,9 +28,9 @@ import type {
 } from "@kli/api";
 
 const EditFileSchema = z.object({
-  path: z.string().min(1),
+  path: z.string().min(1, "path is required"),
   /** Exact text to replace */
-  old: z.string().min(1),
+  old: z.string().min(1, "old text is required"),
   /** Replacement text */
   new: z.string(),
   /** Verify file hasn't changed (SHA-256). Required if file exists. */

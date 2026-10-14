@@ -21,11 +21,11 @@ export const PluginManifestSchema = z.object({
     .string()
     .regex(/^\d+\.\d+\.\d+(?:-[a-z0-9-.]+)?$/, "must be semver"),
   apiVersion: z.literal("1"),
-  kind: z.array(PluginKindSchema).min(1),
-  entrypoint: z.string().startsWith("./"),
+  kind: z.array(PluginKindSchema).min(1, "at least one kind is required"),
+  entrypoint: z.string().startsWith("./", "entrancepath must start with ./"),
   requires: z.array(z.string()).optional(),
   capabilities: z.array(CapabilitySchema),
-  priority: z.number().int().min(0).max(1000).optional().default(0),
+  priority: z.number().int().min(0).max(1000, "priority must be between 0 and 1000").optional().default(0),
 });
 
 export type PluginManifest = z.infer<typeof PluginManifestSchema>;

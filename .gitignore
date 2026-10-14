@@ -15,3 +15,5 @@ examples/
 !.github/workflows
 
 .env
+.claude
+.agents

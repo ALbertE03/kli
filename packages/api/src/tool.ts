@@ -16,9 +16,9 @@ export const ToolResultOkSchema = z.object({
 
 export const ToolResultErrorSchema = z.object({
   ok: z.literal(false),
-  error: z.string(),
-  code: z.string().optional(),
-  retryable: z.boolean().optional(),
+  error: z.string().describe("error message"),
+  code: z.string().optional().describe("error code from ToolErrorCodeSet"),
+  retryable: z.boolean().optional().describe("whether the error is retryable"),
 });
 
 export const ToolResultSchema = z.discriminatedUnion("ok", [
@@ -257,11 +257,24 @@ function numberSchema(def: ZodDefLike): Record<string, unknown> {
 /**
  * Convert a Zod schema to a JSON Schema-compatible object. Always includes a
  * `type` field; falls back to `{ type: "object" }` for unsupported shapes.
+ * Improved: adds missing type information and handles edge cases.
  */
 export function toJsonSchema(schema: z.ZodType<unknown>): JsonSchema {
   try {
     const result = convert(schema);
-    if (typeof result.type !== "string") result.type = "object";
+    if (typeof result.type !== "string") {
+      result.type = "object";
+      result.properties = {};
+    }
+    // Ensure required array is present if there are properties
+    if (result.properties && !Array.isArray(result.required)) {
+      result.required = Object.keys(result.properties).filter(
+        (key) => {
+          const schema = defOf(z.unknown());
+          return !(schema.typeName === "ZodOptional" || schema.typeName === "ZodDefault");
+        }
+      );
+    }
     return result as JsonSchema;
   } catch {
     return { type: "object", properties: {} };
