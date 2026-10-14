@@ -72,10 +72,11 @@ export class SubprocessPluginHost {
     try {
       const msg = JSON.parse(line) as JsonRpcMessage;
       if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id)!;
+        const entry = this.pending.get(msg.id);
         this.pending.delete(msg.id);
-        if (msg.error) reject(new Error(msg.error.message));
-        else resolve(msg.result);
+        if (!entry) return;
+        if (msg.error) entry.reject(new Error(msg.error.message));
+        else entry.resolve(msg.result);
       }
     } catch {
       // Ignore malformed lines
