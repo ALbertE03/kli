@@ -2,18 +2,24 @@
  * @kli/provider-anthropic — Anthropic API provider
  */
 import Anthropic from "@anthropic-ai/sdk";
-import type { HarnessPlugin, Provider, TaskState, ToolDefinition, StepResult } from "@kli/api";
+import type {
+  HarnessPlugin,
+  Provider,
+  TaskState,
+  ToolDefinition,
+  StepResult,
+} from "@kli/api";
+import { toJsonSchema } from "@kli/api";
 
 export const plugin: HarnessPlugin = {
   manifest: {
     id: "kli.provider.anthropic",
     version: "1.0.0",
     apiVersion: "1",
-    kind: ["provider"] as Array<"tool" | "provider" | "context" | "policy">,
+    kind: ["provider"],
     entrypoint: "./dist/index.js",
     capabilities: ["model.call"],
     priority: 0,
-    requires: ["kernel>=0.5 <1.0"],
   },
   register(_registry) {
     // Provider is instantiated at runtime, not registered
@@ -22,35 +28,65 @@ export const plugin: HarnessPlugin = {
 
 export default plugin;
 
+interface AnthropicTool {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown> & { type: "object" };
+}
+
+interface AnthropicToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+
+interface AnthropicTextBlock {
+  type: "text";
+  text: string;
+}
+
+type AnthropicContentBlock = AnthropicToolUseBlock | AnthropicTextBlock;
+
 export class AnthropicProvider implements Provider {
   readonly name = "anthropic";
   private readonly client: Anthropic;
   private readonly model: string;
 
   constructor(apiKey?: string, model = "claude-sonnet-4-20250514") {
-    this.client = new Anthropic({ apiKey: apiKey ?? process.env.ANTHROPIC_API_KEY });
+    const resolvedApiKey = apiKey ?? process.env.ANTHROPIC_API_KEY;
+    if (!resolvedApiKey) {
+      throw new Error(
+        "Anthropic API key not configured. Pass apiKey or set ANTHROPIC_API_KEY env var.",
+      );
+    }
+    this.client = new Anthropic({ apiKey: resolvedApiKey });
     this.model = model;
   }
 
-  async step(state: TaskState, tools: readonly ToolDefinition[], systemPrompt: string, signal: AbortSignal): Promise<StepResult> {
-    // Convert tool definitions to Anthropic format
-    const toolDefs: Array<{ name: string; description: string; input_schema: Record<string, unknown> }> =
-      tools.map((t) => ({
-        name: t.name,
-        description: t.description,
-        input_schema: (t.schema as any)?.jsonSchema ?? (t.schema as any)?.toJSONSchema() ?? { type: "object", properties: {} },
-      }));
+  async step(
+    state: TaskState,
+    tools: readonly ToolDefinition[],
+    systemPrompt: string,
+    signal: AbortSignal,
+  ): Promise<StepResult> {
+    const toolDefs: AnthropicTool[] = tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: toJsonSchema(t.schema) as AnthropicTool["input_schema"],
+    }));
 
-    // Convert messages
     const messages = state.messages
       .filter((m) => m.role !== "system")
       .map((m) => ({
-        role: m.role === "assistant" ? "assistant" : "user",
-        content: m.content,
+        role: (m.role === "assistant" ? "assistant" : "user") as
+          | "user"
+          | "assistant",
+        content: m.content ?? "",
       }));
 
     try {
-      const response = await (this.client.messages.create as any)(
+      const response = (await this.client.messages.create(
         {
           model: this.model,
           max_tokens: 4096,
@@ -59,30 +95,33 @@ export class AnthropicProvider implements Provider {
           tools: toolDefs.length > 0 ? toolDefs : undefined,
         },
         { signal },
-      );
+      )) as unknown as {
+        content: AnthropicContentBlock[];
+        usage: { input_tokens: number; output_tokens: number };
+        stop_reason: string;
+      };
 
       const tokensIn = response.usage?.input_tokens ?? 0;
       const tokensOut = response.usage?.output_tokens ?? 0;
       const cost = this.estimateCost(tokensIn, tokensOut);
 
-      // Extract tool calls
-      const toolCalls = ((response.content as any[]) ?? [])
-        .filter((c) => c.type === "tool_use")
+      const toolCalls = response.content
+        .filter((c): c is AnthropicToolUseBlock => c.type === "tool_use")
         .map((c) => ({
           id: c.id,
           name: c.name,
           args: c.input ?? {},
         }));
 
-      // Extract text content
-      const textContent = ((response.content as any[]) ?? [])
-        .filter((c) => c.type === "text")
+      const textContent = response.content
+        .filter((c): c is AnthropicTextBlock => c.type === "text")
         .map((c) => c.text)
         .join("\n");
 
       return {
         content: textContent || undefined,
-        finishReason: response.stop_reason === "end_turn" ? "end_turn" : "stop",
+        finishReason:
+          response.stop_reason === "end_turn" ? "end_turn" : "stop",
         toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         tokensIn,
         tokensOut,
@@ -95,7 +134,6 @@ export class AnthropicProvider implements Provider {
   }
 
   countTokens(text: string): number {
-    // Rough estimate: ~4 chars per token
     return Math.ceil(text.length / 4);
   }
 
