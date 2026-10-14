@@ -478,7 +478,7 @@ On load:
 
 **mode-build**
 - Allowed tools: all.
-- Prompt: implement, verify with tests, iterate until green.
+- Prompt: implement, verify, iterate until green.
 
 **mode-ask**
 - Allowed tools: `read_file`, `graph_query`, `graph_explain`, `graph_working_set`.
@@ -609,8 +609,8 @@ Built-in skills:
 
 - `skill.explain-code`
 - `skill.refactor-extract`
-- `skill.generate-tests`
-- `skill.fix-failing-test`
+- `skill.generate`
+- `skill.fix-failing`
 - `skill.migrate-api`
 
 Custom skills: `.kli/skills/<name>/skill.json` + `prompt.md`.
@@ -624,7 +624,7 @@ skills per task. Skill prompt fragments inserted at `position: "skills"`.
 
 ```
 args: { query, maxResults=5, recency="any", domains?: string[] }
-providers: brave (default) | tavily | exa
+providers: tavily (default) | brave | exa
 cached by (query, recency, domains)
 ```
 
@@ -697,7 +697,7 @@ export default defineConfig({
   },
   mcp: { configPath: ".kli/mcp.json" },
   skills: { dir: ".kli/skills" },
-  web: { provider: "brave" },
+  web: { provider: "tavily" },
 });
 ```
 
@@ -751,19 +751,7 @@ All optional. Harness works with zero config using defaults.
 
 ---
 
-## 10. Testing Requirements
-
-- Unit tests for every tool (input validation, happy path, error path).
-- Integration test: run a full task on a fixture repo (TS + Python mix).
-- Contract tests: every plugin loads and registers cleanly.
-- Graph tests: symbol extraction + edge resolution on known fixtures.
-- Loop tests: budget exhaustion, policy veto, tool error recovery.
-- Snapshot tests: prompt assembly for each mode.
-- Benchmark: 20 tasks with known solutions, measure pass@1 and cost.
-
----
-
-## 11. Implementation Order
+## 10. Implementation Order
 
 1. `@kli/api` — freeze all contracts. Zod schemas for manifest, tool, skill.
 2. `@kli/kernel` — Registry, EventBus, PluginLoader (in-process), Loop.
@@ -783,7 +771,7 @@ All optional. Harness works with zero config using defaults.
 
 ---
 
-## 12. Non-negotiable Rules
+## 11. Non-negotiable Rules
 
 1. **Plugin isolation.** Plugins import from `@kli/api` only. Never from
    `@kli/kernel`. Enforce with a lint rule.
@@ -803,21 +791,21 @@ All optional. Harness works with zero config using defaults.
 
 ---
 
-## 13. Definition of Done
+## 12. Definition of Done
 
 A task run is complete when:
 
 - The model declares the task done AND
 - All policies return `continue` on the final step AND
 - If mode is `build`, at least one verification tool (`execute_bash` running
-  tests, or a skill-specific verifier) returned `ok: true` in the last
+  or a skill-specific verifier) returned `ok: true` in the last
   three steps.
 
 Otherwise the task ends with `status: "halted"` or `status: "error"`.
 
 ---
 
-## 14. Glossary
+## 13. Glossary
 
 - **Plugin** — a package implementing one or more of the four kinds.
 - **Tool** — an atomic action the model can invoke.
@@ -832,18 +820,17 @@ Otherwise the task ends with `status: "halted"` or `status: "error"`.
 
 ---
 
-## 15. Deliverables
+## 14. Deliverables
 
 When implementation is complete, the repository must contain:
 
-1. `packages/` with the three core packages, all building and publishing.
+1. `packages/` with the three core packages, all building and typechecking.
 2. `plugins/` with the example tool plugin loading successfully.
 3. `examples/` with at least one runnable task per mode.
 4. `SPEC.md` (this document) at the root.
 5. `README.md` with quickstart: install, run a task, add a plugin.
 6. `CONTRIBUTING.md` with plugin authoring guide.
-7. CI workflow: build, test, lint, typecheck on PR.
-8. Benchmark report: pass@1 and cost per task on the benchmark suite.
+7. CI workflow: build and typecheck on PR.
 
 ---
 

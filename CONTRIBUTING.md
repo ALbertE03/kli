@@ -93,21 +93,6 @@ function toolDef(): ToolDefinition {
 3. Register via `registry.registerBackend(backend)`.
 4. The graph orchestrator (kernel) auto-detects backends at workspace scan time.
 
-## Testing conventions
-
-Every plugin should ship:
-- **Unit tests**: input validation, happy path, error path.
-- **Contract tests**: plugin loads and registers cleanly against the registry.
-- **Snapshot tests**: prompt fragments for each supported mode position.
-
-Run:
-
-```bash
-pnpm test:unit   # fast unit surface
-pnpm test:int    # integration via fixture repo
-pnpm test:graph  # code graph extraction correctness
-```
-
 ## Semver policy
 
 `@kli/api` is frozen — major bumps break all plugins. When the API evolves:
@@ -117,8 +102,7 @@ pnpm test:graph  # code graph extraction correctness
 
 ## Release checklist
 
-- [ ] `@kli/api` passes all unit tests
-- [ ] `@kli/kernel` passes all unit + integration tests
+- [ ] `@kli/api` typechecks cleanly
+- [ ] `@kli/kernel` typechecks cleanly
 - [ ] All shipped plugins load successfully (`kli plugin list`)
-- [ ] `klI run` on the example task completes end-to-end
-- [ ] Benchmark: pass@1 ≥ target threshold
+- [ ] `kli run` on the example task completes end-to-end

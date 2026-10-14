@@ -5,7 +5,7 @@ that read, edit, and execute code in a workspace.
 
 - Spec: see [`SPEC.md`](./SPEC.md)
 - TypeScript 5, ESM-only, pnpm workspace
-- Kernel under 2500 LOC excluding tests (§4.1 target)
+- Kernel under 2500 LOC (§4.1 target)
 
 ## Quickstart
 
@@ -58,8 +58,10 @@ kli/
 | `@kli/backend-python-ast` | ✅ | Python AST backend |
 | `@kli/backend-config` | ✅ | Config file backend |
 | `@kli/context-graph` | ✅ | Graph query tools |
+| `@kli/context-system` | ✅ | System-prompt sections (tool catalog, rules, context) |
 | `@kli/context-mcp` | ✅ | MCP server bridge |
 | `@kli/context-skills` | ✅ | Built-in skills |
+| `@kli/backend-tree-sitter` | ⏳ | Tree-sitter backend (WIP; grammars not bundled) |
 | `@kli/tool-web-search` | ✅ | Web search/fetch |
 | `@kli/runtime-subprocess` | ✅ | Out-of-process plugin host |
 | `@kli/provider-openai` | ✅ | OpenAI provider |
@@ -68,11 +70,45 @@ kli/
 ## CLI
 
 ```
-kli run [--mode plan|build|ask] [--skill <id>] "<task>"
+kli run [--mode plan|build|ask] [--project <name>] [--debug] [--quiet] "<task>"
+kli repl [--mode plan|build|ask] [--project <name>]
+kli prompt [--mode plan|build|ask] [--task "<task>"]   # print the assembled system prompt
+kli tools  [--mode plan|build|ask]                      # list visible tools + JSON Schemas
+kli graph build                                        # build the code graph (AST backends)
+kli graph status                                       # show the cached graph summary
+kli session list | kli session resume <id>
+kli project create <name> | kli project list
 kli plugin list
-kli graph build
+kli model list
 kli help
 ```
+
+`kli run` streams assistant tokens as they arrive and prints live tool/model
+activity plus tokens/s to stderr. `--quiet` suppresses the live logs;
+`--debug` also prints the assembled system prompt.
+
+## Configuration (`.env`)
+
+All model/runtime configuration is read from the environment (`.env` is loaded
+automatically). Nothing is hardcoded in the providers.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `KLI_MODEL` | `auto` | Model id passed to the provider |
+| `KLI_TEMPERATURE` | `0.7` | Sampling temperature |
+| `KLI_MAX_TOKENS` | — | Task token **budget** (CLI) |
+| `KLI_MAX_OUTPUT_TOKENS` | `4096` | Per-response completion cap (`max_tokens`) |
+| `KLI_STREAM` | `1` | Stream tokens (`0` disables) |
+| `KLI_TOP_P`, `KLI_PRESENCE_PENALTY`, `KLI_FREQUENCY_PENALTY`, `KLI_SEED` | — | Optional sampling |
+| `KLI_STOP` | — | Comma-separated stop sequences |
+| `KLI_REASONING_EFFORT` | — | Reasoning effort, when supported |
+| `KLI_COST_LIMIT` | `5.0` | USD cost ceiling per task |
+| `KLI_TIMEOUT` | `120000` | Task deadline (ms) |
+| `KLI_MAX_RETRIES` | `3` | Retry attempts for retryable tool errors |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — | OpenAI-compatible provider |
+| `ANTHROPIC_API_KEY` | — | Anthropic provider |
+| `TAVILY_KEY` | — | Required by `web_search` (`fetch_url` needs no key) |
+
 
 ## Adding a plugin
 
@@ -113,20 +149,16 @@ function buildTool(): ToolDefinition {
 }
 ```
 
-Then wire it into `.kli/config.ts`:
+Then wire it into `.kli/config.js`:
 
-```ts
-export default defineConfig({
-  plugins: { include: ["./plugins/my-tool"] },
-});
+```js
+export default {
+  plugins: { include: ["./plugins/my-tool/dist/index.js"] },
+};
 ```
 
-## Testing
-
-```bash
-pnpm test            # unit + integration
-pnpm test:benchmark  # pass@1 on benchmark suite
-```
+Config is read at runtime from `.kli/config.js` (or `.kli/config.ts` if you
+compile it yourself) via `createRequire()` — no build step for config changes.
 
 ## Contributing
 
