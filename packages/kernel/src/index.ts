@@ -37,6 +37,7 @@ import type { BuildGraphResult } from "./graph-builder.js";
 import { Loop } from "./loop.js";
 import { IDENTITY_FRAGMENT } from "./identity.js";
 import type { KernelBootOptions, TaskRunOptions, TaskRunResult } from "./kernel-types.js";
+import type { Capability } from "@kli/api";
 
 export { Kernel };
 
@@ -58,7 +59,7 @@ class Kernel {
     this.loader = new PluginLoader({
       workspaceRoot: this.workspaceRoot,
       bus: this.bus,
-      capabilities: opts.capabilities ?? new Set(),
+      capabilities: opts.capabilities ?? new Set<Capability>(),
       logger: opts.logger,
       config: opts.config,
       secrets: opts.secrets,

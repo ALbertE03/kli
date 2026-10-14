@@ -4,7 +4,7 @@
  * Path: <workspaceRoot>/.kli/graph.json (renamed from .kiln per the KLI rename)
  * Contents: serialized CodeGraph + fileHashes.
  */
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";

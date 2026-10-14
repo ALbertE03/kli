@@ -10,7 +10,7 @@
  *  - Cache persistence with invalidation
  */
 import { z } from "zod";
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
   HarnessPlugin,

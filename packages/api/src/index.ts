@@ -33,10 +33,13 @@ export {
   ToolResultOkSchema,
   ToolResultErrorSchema,
   ToolResultSchema,
+  ToolErrorCodeSet,
+  ToolErrorCodeSchema,
   type ToolResult,
   type ToolDefinition,
   type ToolView,
   type JsonSchema,
+  type ToolErrorCode,
   toJsonSchema,
 } from "./tool.js";
 

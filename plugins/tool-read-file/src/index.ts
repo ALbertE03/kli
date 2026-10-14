@@ -21,7 +21,6 @@ import type {
   HarnessPlugin,
   Capability,
   ToolDefinition,
-  PluginContext,
 } from "@kli/api";
 
 const ReadFileSchema = z.object({

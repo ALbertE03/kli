@@ -11,11 +11,11 @@
  */
 import { z } from "zod";
 import { execFileSync, spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import type {
   HarnessPlugin,
   Capability,
   ToolDefinition,
+  ToolErrorCode,
 } from "@kli/api";
 
 const ExecuteBashSchema = z.object({
@@ -125,7 +125,7 @@ Safety:
           args.command, resolvedCwd, timeout, maxOutput, signal,
         );
         if (!streamingResult.ok) {
-          return { ok: false, error: streamingResult.error ?? "streaming failed", code: streamingResult.code ?? "UNKNOWN" };
+          return { ok: false, error: streamingResult.error ?? "streaming failed", code: (streamingResult.code as ToolErrorCode) ?? "EXECUTION_ERROR" };
         }
         return { ok: true, content: streamingResult.content, meta: streamingResult.meta };
       }
@@ -172,7 +172,7 @@ async function executeStreaming(
   timeout: number,
   maxOutput: number,
   signal: AbortSignal,
-): Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; error?: string; code?: string }> {
+): Promise<{ ok: boolean; content: string; meta?: Record<string, unknown>; error?: string; code?: ToolErrorCode }> {
   return new Promise((resolve) => {
     const start = Date.now();
     const proc = spawn("bash", ["-c", command], {

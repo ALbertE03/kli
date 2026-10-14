@@ -1,10 +1,7 @@
 /**
  * @kli/context-mcp — MCP server bridge
  */
-import { z } from "zod";
-import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import type { HarnessPlugin, Capability, ToolDefinition } from "@kli/api";
+import type { HarnessPlugin, Capability, Registry } from "@kli/api";
 
 const capabilities: Capability[] = ["net.http"];
 
@@ -37,7 +34,7 @@ interface McpConfig {
   }>;
 }
 
-function loadMcpConfig(registry: { registerMcpServer(name: string, tools: ToolDefinition[]): void }): McpConfig {
+function loadMcpConfig(registry: Registry): McpConfig {
   // Placeholder — in production, this would spawn real MCP servers
   // using @modelcontextprotocol/sdk
   return { servers: {} };

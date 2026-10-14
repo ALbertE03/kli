@@ -7,7 +7,14 @@
  *  - create_file may only write inside `.kli/plans/`
  */
 import { defineModePolicy } from "@kli/api";
-import type { HarnessPlugin, Policy, PolicyDecision, TaskState, Bus, ToolCallView } from "@kli/api";
+import type {
+  HarnessPlugin,
+  Policy,
+  PolicyDecision,
+  TaskState,
+  Bus,
+  ToolCallView,
+} from "@kli/api";
 
 const PLAN_PROMPT = `You are in PLAN mode: explore the workspace and produce a plan.
 

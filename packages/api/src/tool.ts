@@ -26,9 +26,43 @@ export const ToolResultSchema = z.discriminatedUnion("ok", [
   ToolResultErrorSchema,
 ]);
 
+/** Standardised error codes for tool results. Use these instead of raw strings so typos surface at compile time. */
+export const ToolErrorCodeSet = [
+  "ABORTED",
+  "FILE_NOT_FOUND",
+  "NOT_FOUND",
+  "IS_DIRECTORY",
+  "STALE",
+  "UNKNOWN_TOOL",
+  "UNKNOWN",
+  "CAPABILITY_DENIED",
+  "SCHEMA_ERROR",
+  "POLICY_DENIED",
+  "POLICY_HALT",
+  "EXECUTION_ERROR",
+  "TIMEOUT",
+  "COMMAND_FAILED",
+  "READ_ONLY_VIOLATION",
+  "DANGEROUS_PATTERN",
+  "INVALID_CWD",
+  "FILE_EXISTS",
+  "SIZE_EXCEEDED",
+  "WRITE_ERROR",
+  "NO_MATCH",
+  "NO_PATH",
+  "NO_GRAPH",
+  "MISSING_SECRET",
+  "SEARCH_ERROR",
+  "FETCH_ERROR",
+  "RATE_LIMIT",
+] as const;
+
+export const ToolErrorCodeSchema = z.enum(ToolErrorCodeSet);
+export type ToolErrorCode = (typeof ToolErrorCodeSet)[number];
+
 export type ToolResult<R = unknown> =
   | { ok: true; content: string; data?: R; meta?: Record<string, unknown> }
-  | { ok: false; error: string; code?: string; retryable?: boolean };
+  | { ok: false; error: string; code?: ToolErrorCode; retryable?: boolean };
 
 export interface ToolDefinition<A = unknown, R = unknown> {
   readonly name: string;

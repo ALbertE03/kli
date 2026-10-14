@@ -10,7 +10,6 @@ import type {
   BuildOptions,
   CodeGraph,
   SymbolNode,
-  SymbolEdge,
   BackendCapabilities,
 } from "@kli/api";
 
@@ -33,7 +32,7 @@ export class PythonAstBackend implements AstBackend {
 
   async detect(workspaceRoot: string): Promise<DetectionResult> {
     const hasPython = existsSync(join(workspaceRoot, "pyproject.toml")) ||
-                      existsSync(join(workspaceRoot, "setup.py"));
+      existsSync(join(workspaceRoot, "setup.py"));
     return {
       score: hasPython ? 90 : 60,
       reason: hasPython ? "Python project detected" : "Python files found without project config",
@@ -71,7 +70,7 @@ print(json.dumps(nodes))
         { encoding: "utf-8", timeout: 60000 },
       );
       const parsed = JSON.parse(result) as Array<Omit<SymbolNode, "column" | "signature" | "docstring" | "metadata"> & Partial<Pick<SymbolNode, "column" | "signature" | "docstring" | "metadata">>>;
-      
+
       const nodes = new Map<string, SymbolNode>();
       for (const n of parsed) {
         nodes.set(n.id, { ...n, column: undefined, signature: undefined, docstring: undefined, metadata: undefined } as SymbolNode);

@@ -139,4 +139,4 @@ export interface CodeGraph {
   warnings: string[];
 }
 
-export { CapabilitySchema } from "./capabilities.js";
+

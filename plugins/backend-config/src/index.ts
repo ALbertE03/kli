@@ -1,7 +1,7 @@
 /**
  * @kli/backend-config — config file backend (yaml, toml, json, etc.)
  */
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type {
   AstBackend,

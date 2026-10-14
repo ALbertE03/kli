@@ -23,15 +23,13 @@ import type {
   GraphSummary,
   Capability,
   Policy,
+  TaskRegistry,
+  PromptContext,
 } from "@kli/api";
-import type { TaskRegistry } from "@kli/api";
-import type { PromptContext } from "@kli/api";
 import type { Provider } from "./provider.js";
 import { PromptBuilder } from "./prompt-builder.js";
 import { hasCapabilities } from "./capability-gate.js";
 import { resolvePath } from "./paths.js";
-
-type CapSet = ReadonlySet<string>;
 
 export interface LoopOptions {
   taskId: string;
@@ -46,7 +44,7 @@ export interface LoopOptions {
   cwd: string;
   graph?: { summary?: GraphSummary };
   /** Capabilities available to this task (granted by the caller). */
-  capabilities: ReadonlySet<string>;
+  capabilities: ReadonlySet<Capability>;
   secrets?: Readonly<Record<string, string>>;
   config?: Readonly<Record<string, unknown>>;
   signal?: AbortSignal;
@@ -299,9 +297,8 @@ export class Loop {
     }
 
     // Capability gate (Rule #2)
-    const capSet = this.opts.capabilities as CapSet;
-    if (!hasCapabilities(tool.capabilities as readonly Capability[], capSet)) {
-      const missing = tool.capabilities.filter((c) => !capSet.has(c as string));
+    if (!hasCapabilities(tool.capabilities, this.opts.capabilities)) {
+      const missing = tool.capabilities.filter((c) => !this.opts.capabilities.has(c));
       const result: ToolResult = {
         ok: false,
         error: `Missing capabilities: ${missing.join(", ")}`,
@@ -582,7 +579,7 @@ export class Loop {
       cwd: this.opts.cwd,
       workspaceRoot: this.opts.workspaceRoot,
       budget: state.budget,
-      capabilities: this.opts.capabilities as ReadonlySet<Capability>,
+      capabilities: this.opts.capabilities,
       logger: {
         debug: console.debug,
         info: console.info,
@@ -616,10 +613,23 @@ export class Loop {
 }
 
 function hashArgs(args: unknown): string {
-  const s = JSON.stringify(args);
+  // Protect against circular references which would throw on JSON.stringify.
+  const seen = new Set<unknown>();
+  const stringify = (v: unknown): string => {
+    if (v !== null && typeof v === "object") {
+      if (seen.has(v)) return "[Circular]";
+      seen.add(v);
+    }
+    return JSON.stringify(v);
+  };
   let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+  try {
+    const s = stringify(args);
+    for (let i = 0; i < s.length; i++) {
+      h = (Math.imul(31, h) + s.charCodeAt(i)) | 0;
+    }
+  } catch {
+    return "err";
   }
   return Math.abs(h).toString(16);
 }

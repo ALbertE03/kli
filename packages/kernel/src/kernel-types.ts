@@ -1,11 +1,15 @@
 /**
  * Kernel public types.
  */
-import type { Bus, PluginContext, Logger } from "@kli/api";
-import type { Budget, Mode, Capabilities } from "@kli/api";
+import type {
+  Logger,
+  Capability,
+  Budget,
+  Mode,
+  Capabilities,
+  GraphSummary,
+} from "@kli/api";
 import type { Provider } from "./provider.js";
-import type { StepResult } from "@kli/api";
-import type { GraphSummary } from "@kli/api";
 
 export interface KernelBootOptions {
   workspaceRoot?: string;
@@ -33,7 +37,7 @@ export interface TaskRunOptions {
   budget: Budget;
   provider: Provider;
   cwd?: string;
-  capabilities: ReadonlySet<string>;
+  capabilities: ReadonlySet<Capability>;
   secrets?: Readonly<Record<string, string>>;
   config?: Readonly<Record<string, unknown>>;
   signal?: AbortSignal;

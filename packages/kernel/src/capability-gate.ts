@@ -22,7 +22,7 @@ export class CapabilityError extends Error {
 /** True if every held capability is present in `granted`. */
 export function hasCapabilities(
   held: readonly Capability[],
-  granted: ReadonlySet<string>,
+  granted: ReadonlySet<Capability>,
 ): boolean {
   for (const c of held) {
     if (!granted.has(c)) return false;

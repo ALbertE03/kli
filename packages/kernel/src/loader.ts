@@ -22,6 +22,7 @@ import type {
   Bus,
   Capabilities,
   PluginManifest,
+  Capability,
 } from "@kli/api";
 import { BudgetSchema } from "@kli/api";
 import { resolvePath } from "./paths.js";
@@ -157,7 +158,7 @@ export class PluginLoader {
     this.bus = opts.bus ?? noopBus;
     this.config = opts.config ?? {};
     this.secrets = opts.secrets ?? {};
-    this.capabilities = opts.capabilities ?? new Set();
+    this.capabilities = opts.capabilities ?? new Set<Capability>();
   }
 
   async load(spec: string): Promise<LoadedPlugin | null> {

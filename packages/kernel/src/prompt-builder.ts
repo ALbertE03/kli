@@ -12,10 +12,8 @@ import type {
   PromptFragment,
   PromptPosition,
   PromptContext,
-  ToolView,
   GraphSummary,
 } from "@kli/api";
-import type { Mode } from "@kli/api";
 
 const POSITION_ORDER: PromptPosition[] = [
   "identity",
