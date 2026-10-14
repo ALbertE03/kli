@@ -25,14 +25,24 @@ export interface StepResult {
   readonly cost: number;
 }
 
+export interface ModelInfo {
+  id: string;
+  context_window?: number;
+}
+
 export interface Provider {
   readonly name: string;
 
+  /**
+   * Produce one assistant turn. Implementations that support streaming SHOULD
+   * invoke `onToken` for each incremental text delta; `onToken` may be omitted.
+   */
   step(
     state: TaskState,
     tools: readonly ToolDefinition[],
     systemPrompt: string,
     signal: AbortSignal,
+    onToken?: (delta: string) => void,
   ): Promise<StepResult>;
 
   /** Cheap token estimate (used for budget accounting and prompt trimming). */
@@ -40,4 +50,7 @@ export interface Provider {
 
   /** Estimate USD for a token pair (used for budget checks). */
   estimateCost(tokensIn: number, tokensOut: number): number;
+
+  /** List available models (optional, for `kli model list`). */
+  listModels?(): Promise<ModelInfo[]>;
 }

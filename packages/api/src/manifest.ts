@@ -10,11 +10,6 @@ export type PluginKind = (typeof PluginKindSet)[number];
 
 export const PluginKindSchema = z.enum(PluginKindSet);
 
-/**
- * Semantic version constraint (simple subset: >=min <max).
- */
-export const SemverRangeSchema = z.string();
-
 export const PluginManifestSchema = z.object({
   id: z
     .string()

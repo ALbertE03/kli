@@ -58,6 +58,8 @@ export const ToolCalledSchema = z.object({
   type: z.literal("tool.called"),
   name: z.string(),
   argsHash: z.string(),
+  /** Full args object (redacted from events where sensitive). */
+  args: z.record(z.unknown()).optional(),
 });
 
 export const ToolCompletedSchema = z.object({
@@ -65,6 +67,9 @@ export const ToolCompletedSchema = z.object({
   name: z.string(),
   ok: z.boolean(),
   ms: z.number(),
+  /** Failure detail, when `ok` is false. */
+  error: z.string().optional(),
+  code: z.string().optional(),
 });
 
 export const ToolProgressSchema = z.object({
@@ -82,6 +87,8 @@ export const ModelResponseSchema = z.object({
   type: z.literal("model.response"),
   tokens: z.number(),
   cost: z.number(),
+  /** Wall-clock duration of the model call, for tokens/s display. */
+  ms: z.number().optional(),
 });
 
 export const ContextCompactedSchema = z.object({

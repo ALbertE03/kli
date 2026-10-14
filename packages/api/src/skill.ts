@@ -1,5 +1,9 @@
 /**
- * Skills — high-level capabilities that bundle prompt + tools.
+ * Skills — high-level capabilities that bundle a prompt + tools (§4.9).
+ *
+ * This module is the single source of truth for the skill contracts. Prompt
+ * fragments live in `prompt.ts`; skills live here. Previously the two were
+ * duplicated across both files — do not reintroduce that.
  */
 
 import { z } from "zod";
@@ -20,9 +24,7 @@ export const SkillTriggerCommandSchema = z.object({
   command: z.string(),
 });
 
-export const SkillTriggerManualSchema = z.object({
-  type: z.literal("manual"),
-});
+export const SkillTriggerManualSchema = z.object({ type: z.literal("manual") });
 
 export const SkillTriggerSchema = z.discriminatedUnion("type", [
   SkillTriggerKeywordSchema,

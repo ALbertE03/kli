@@ -10,7 +10,7 @@ import type { ToolDefinition } from "./tool.js";
 import type { Policy } from "./policy.js";
 import type { SkillManifest } from "./skill.js";
 import type { PromptFragment } from "./prompt.js";
-import type { Mode } from "./mode.js";
+import type { Mode, ModePolicy } from "./mode.js";
 
 export interface Registry {
   registerTool(tool: ToolDefinition, source: string, priority?: number): void;
@@ -20,6 +20,14 @@ export interface Registry {
   registerBackend(b: AstBackend): void;
   registerMcpServer(name: string, tools: ToolDefinition[]): void;
 
+  /**
+   * Install a mode. Scopes the mode's prompt fragment to that mode and
+   * registers its policy + tool-visibility filter. Preferred over
+   * `setModeFilter`/`registerPromptFragment` because it is type-safe on
+   * `Mode` and can never leak a fragment into another mode.
+   */
+  registerMode(policy: ModePolicy, source: string): void;
+
   /** Throws if the tool is not registered. */
   get(name: string): ToolDefinition;
   find(name: string): ToolDefinition | undefined;
@@ -28,8 +36,9 @@ export interface Registry {
   snapshot(): TaskRegistry;
 
   /**
-   * Register the tool visibility filter for a mode. Installed by the mode
-   * plugin — the kernel itself never names a tool or a mode.
+   * Low-level: register the tool visibility filter for a mode. Prefer
+   * `registerMode`. Installed by a mode plugin — the kernel itself never
+   * names a tool or a mode.
    */
   setModeFilter(
     mode: Mode,
@@ -37,6 +46,11 @@ export interface Registry {
   ): void;
 }
 
+/**
+ * The frozen, per-task view of the registry (Rule #4). It is intentionally
+ * read-only: there is no `setModeFilter` here, so any attempt to mutate a
+ * snapshot is a *compile-time* error rather than a runtime throw.
+ */
 export interface TaskRegistry {
   readonly tools: ReadonlyMap<string, ToolDefinition>;
   readonly policies: readonly Policy[];
@@ -46,8 +60,4 @@ export interface TaskRegistry {
   get(name: string): ToolDefinition;
   find(name: string): ToolDefinition | undefined;
   toolsFor(mode: Mode, ctx: PluginContext): ToolDefinition[];
-  setModeFilter(
-    mode: Mode,
-    filter: (tool: ToolDefinition, ctx: PluginContext) => boolean,
-  ): void;
 }

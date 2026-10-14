@@ -5,7 +5,6 @@
  */
 
 import { z } from "zod";
-import { CapabilitySchema } from "./capabilities.js";
 
 export const BackendCapabilitiesSchema = z.object({
   crossFile: z.boolean(),
@@ -140,4 +139,4 @@ export interface CodeGraph {
   warnings: string[];
 }
 
-export { CapabilitySchema };
+export { CapabilitySchema } from "./capabilities.js";

@@ -36,16 +36,24 @@ export {
   type ToolResult,
   type ToolDefinition,
   type ToolView,
+  type JsonSchema,
+  toJsonSchema,
 } from "./tool.js";
 
 // Policy
-export { PolicyDecisionSchema, type PolicyDecision, type Policy } from "./policy.js";
+export {
+  PolicyDecisionSchema,
+  type PolicyDecision,
+  type Policy,
+  type ToolCallView,
+} from "./policy.js";
 
 // Provider
 export {
   type Provider,
   type StepResult,
   type ToolInvocation,
+  type ModelInfo,
 } from "./provider.js";
 
 // Backend / CodeGraph
@@ -73,7 +81,7 @@ export {
   type BackendInfo,
 } from "./backend.js";
 
-// Prompt / Skills
+// Prompt
 export {
   PromptPositionSet,
   PromptPositionSchema,
@@ -85,6 +93,10 @@ export {
   type SkillDescriptor,
   type McpServerInfo,
   type BudgetSummary,
+} from "./prompt.js";
+
+// Skills (single source of truth: skill.ts)
+export {
   SkillTriggerKeywordSchema,
   SkillTriggerFileSchema,
   SkillTriggerCommandSchema,
@@ -93,7 +105,7 @@ export {
   type SkillTrigger,
   SkillManifestSchema,
   type SkillManifest,
-} from "./prompt.js";
+} from "./skill.js";
 
 // Modes & Events
 export {
@@ -101,6 +113,7 @@ export {
   ModeSchema,
   type Mode,
   type ModePolicy,
+  defineModePolicy,
 } from "./mode.js";
 export {
   EventSchema,

@@ -4,8 +4,8 @@
  */
 
 import { z } from "zod";
-import { CapabilitySchema } from "./capabilities.js";
 import { ModeSchema } from "./mode.js";
+import type { Mode } from "./mode.js";
 import type { ToolView } from "./tool.js";
 
 export const PromptPositionSet = [
@@ -77,6 +77,12 @@ export const PromptFragmentSchema = z.object({
   position: PromptPositionSchema,
   content: z.union([z.string(), z.function()]),
   alwaysInclude: z.boolean().optional().default(false),
+  /**
+   * When set, the fragment is only included while the task is running in one
+   * of these modes. This is how a mode plugin contributes a fragment that must
+   * never leak into other modes.
+   */
+  modes: z.array(ModeSchema).optional(),
 });
 
 export interface PromptFragment {
@@ -85,44 +91,5 @@ export interface PromptFragment {
   readonly position: PromptPosition;
   readonly content: PromptFragmentContent;
   readonly alwaysInclude?: boolean;
+  readonly modes?: readonly Mode[];
 }
-
-export const SkillTriggerKeywordSchema = z.object({
-  type: z.literal("keyword"),
-  patterns: z.array(z.string()),
-});
-export const SkillTriggerFileSchema = z.object({
-  type: z.literal("file"),
-  globs: z.array(z.string()),
-});
-export const SkillTriggerCommandSchema = z.object({
-  type: z.literal("command"),
-  command: z.string(),
-});
-export const SkillTriggerManualSchema = z.object({ type: z.literal("manual") });
-
-export const SkillTriggerSchema = z.discriminatedUnion("type", [
-  SkillTriggerKeywordSchema,
-  SkillTriggerFileSchema,
-  SkillTriggerCommandSchema,
-  SkillTriggerManualSchema,
-]);
-
-export type SkillTrigger = z.infer<typeof SkillTriggerSchema>;
-
-export const SkillManifestSchema = z.object({
-  id: z.string(),
-  name: z.string(),
-  description: z.string(),
-  version: z.string(),
-  triggers: z.array(SkillTriggerSchema),
-  tools: z.array(z.string()),
-  prompt: z.string(),
-  capabilities: z.array(CapabilitySchema),
-});
-
-export type SkillManifest = z.infer<typeof SkillManifestSchema>;
-
-// Re-export ToolView for consumers that need it here
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
-export interface _ToolViewReExport extends ToolView {}
