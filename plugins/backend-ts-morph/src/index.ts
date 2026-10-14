@@ -148,7 +148,7 @@ export class TsMorphBackend implements AstBackend {
       fileSymbolCounts.set(node.file, (fileSymbolCounts.get(node.file) ?? 0) + 1);
     }
     for (const [from, edgeList] of graph.edges.entries()) {
-      const file = String(from).split("::")[0]!;
+      const file = String(from).split("::")[0] ?? "";
       fileEdgeCounts.set(file, (fileEdgeCounts.get(file) ?? 0) + edgeList.length);
     }
     const langFiles = new Map<string, string[]>();
@@ -278,7 +278,8 @@ export class TsMorphBackend implements AstBackend {
     const stack = [workspaceRoot];
     
     while (stack.length > 0) {
-      const dir = stack.pop()!;
+      const dir = stack.pop();
+      if (!dir) continue;
       try {
         const entries = readdirSync(dir, { withFileTypes: true });
         for (const entry of entries) {
@@ -312,8 +313,8 @@ export class TsMorphBackend implements AstBackend {
     filePath: string,
     language: string
   ): { id: string; symbol: SymbolNode; edges: SymbolEdge[] } | null {
-    // Get line number (1-based)
-    const line = (node as any).getStartLineNumber?.() ?? 1;
+    // Get line number (1-based) — getStartLineNumber exists at runtime but is untyped in ts-morph 22
+    const line = ((node as unknown as { getStartLineNumber?: () => number }).getStartLineNumber?.() ?? 1);
     
     // Get the symbol kind and basic info
     let kind: SymbolKind | undefined;
@@ -342,7 +343,7 @@ export class TsMorphBackend implements AstBackend {
       name = getNameFromChildren(func);
       qualifiedName = name;
       signature = this.getFunctionSignature(func);
-      docstring = func.getJsDocs?.()?.map((doc: any) => doc.getCommentText?.() || "").join(" ").trim() || undefined;
+      docstring = func.getJsDocs?.()?.map((doc: unknown) => ((doc as { getCommentText?: () => string }).getCommentText?.() ?? "")).join(" ").trim() || undefined;
       exported = func.isExported?.() ?? false;
     } else if (nodeKind === SyntaxKind.ClassDeclaration) {
       kind = "class";
@@ -350,7 +351,7 @@ export class TsMorphBackend implements AstBackend {
       name = getNameFromChildren(cls);
       qualifiedName = name;
       signature = this.getClassSignature(cls);
-      docstring = cls.getJsDocs?.()?.map((doc: any) => doc.getCommentText?.() || "").join(" ").trim() || undefined;
+      docstring = cls.getJsDocs?.()?.map((doc: unknown) => ((doc as { getCommentText?: () => string }).getCommentText?.() ?? "")).join(" ").trim() || undefined;
       exported = cls.isExported?.() ?? false;
     } else if (nodeKind === SyntaxKind.InterfaceDeclaration) {
       kind = "interface";
@@ -358,7 +359,7 @@ export class TsMorphBackend implements AstBackend {
       name = getNameFromChildren(intf);
       qualifiedName = name;
       signature = this.getInterfaceSignature(intf);
-      docstring = intf.getJsDocs?.()?.map((doc: any) => doc.getCommentText?.() || "").join(" ").trim() || undefined;
+      docstring = intf.getJsDocs?.()?.map((doc: unknown) => ((doc as { getCommentText?: () => string }).getCommentText?.() ?? "")).join(" ").trim() || undefined;
       exported = intf.isExported?.() ?? false;
     } else if (nodeKind === SyntaxKind.TypeAliasDeclaration) {
       kind = "type";
@@ -374,7 +375,7 @@ export class TsMorphBackend implements AstBackend {
         }
       });
       signature = typeText ? `type ${name} = ${typeText}` : `type ${name}`;
-      docstring = typeAlias.getJsDocs?.()?.map((doc: any) => doc.getCommentText?.() || "").join(" ").trim() || undefined;
+      docstring = typeAlias.getJsDocs?.()?.map((doc: unknown) => ((doc as { getCommentText?: () => string }).getCommentText?.() ?? "")).join(" ").trim() || undefined;
       exported = typeAlias.isExported?.() ?? false;
     } else if (nodeKind === SyntaxKind.EnumDeclaration) {
       kind = "class";
@@ -382,7 +383,7 @@ export class TsMorphBackend implements AstBackend {
       name = getNameFromChildren(enm);
       qualifiedName = name;
       signature = `enum ${name} { ... }`;
-      docstring = enm.getJsDocs?.()?.map((doc: any) => doc.getCommentText?.() || "").join(" ").trim() || undefined;
+      docstring = enm.getJsDocs?.()?.map((doc: unknown) => ((doc as { getCommentText?: () => string }).getCommentText?.() ?? "")).join(" ").trim() || undefined;
       exported = enm.isExported?.() ?? false;
     } else if (nodeKind === SyntaxKind.VariableStatement) {
       const varStmt = node as import("ts-morph").VariableStatement;
@@ -391,7 +392,7 @@ export class TsMorphBackend implements AstBackend {
       const decl = decls[0];
       if (!decl) return null;
       
-      const parentKind = (decl as any).getParent?.()?.getKind?.();
+      const parentKind = ((decl as { getParent?: () => import("ts-morph").Node }).getParent?.()?.getKind?.()) ?? 0;
       // Skip variables inside functions for now
       if ([SyntaxKind.FunctionDeclaration, SyntaxKind.MethodDeclaration, SyntaxKind.ArrowFunction].includes(parentKind ?? 0)) {
         return null;
@@ -449,7 +450,7 @@ export class TsMorphBackend implements AstBackend {
               from: id,
               to: `${filePath}::${targetName}`,
               kind: "calls",
-              line: (child as any).getStartLineNumber?.() ?? 0,
+              line: ((child as unknown as { getStartLineNumber?: () => number }).getStartLineNumber?.() ?? 0),
               external: undefined,
               confidence: "inferred",
             });
