@@ -280,7 +280,8 @@ Returns: Path as array of symbol IDs`,
       visited.add(args.from);
 
       while (queue.length > 0) {
-        const current = queue.shift()!;
+        const current = queue.shift();
+        if (!current) continue;
         if (current.id === args.to) {
           return {
             ok: true,
@@ -315,22 +316,33 @@ Returns: Path as array of symbol IDs`,
   };
 }
 
-function deserializeGraph(s: any): CodeGraph {
-  const nodes = new Map<string, SymbolNode>(s.nodes ?? []);
-  const edges = new Map<string, SymbolEdge[]>(s.edges ?? []);
-  const reverseEdges = new Map<string, SymbolEdge[]>(s.reverseEdges ?? []);
+function deserializeGraph(s: unknown): CodeGraph {
+  const obj = s as Record<string, unknown>;
+  const nodes = new Map<string, SymbolNode>(
+    (obj.nodes as [string, SymbolNode][] | undefined) ?? [],
+  );
+  const edges = new Map<string, SymbolEdge[]>(
+    (obj.edges as [string, SymbolEdge[]][] | undefined) ?? [],
+  );
+  const reverseEdges = new Map<string, SymbolEdge[]>(
+    (obj.reverseEdges as [string, SymbolEdge[]][] | undefined) ?? [],
+  );
   return {
     version: 1,
-    workspaceRoot: s.workspaceRoot,
-    languageStats: s.languageStats ?? {},
+    workspaceRoot: (obj.workspaceRoot as string) ?? "",
+    languageStats: (obj.languageStats as Record<string, unknown>) ?? {},
     nodes,
     edges,
     reverseEdges,
-    fileIndex: new Map(s.fileIndex ?? []),
-    fileLanguages: new Map(s.fileLanguages ?? []),
-    crossLanguageEdges: s.crossLanguageEdges ?? [],
-    builtAt: s.builtAt ?? Date.now(),
-    backends: s.backends ?? [],
-    warnings: s.warnings ?? [],
+    fileIndex: new Map<string, string[]>(
+      (obj.fileIndex as [string, string[]][] | undefined) ?? [],
+    ),
+    fileLanguages: new Map<string, string>(
+      (obj.fileLanguages as [string, string][] | undefined) ?? [],
+    ),
+    crossLanguageEdges: (obj.crossLanguageEdges as SymbolEdge[] | undefined) ?? [],
+    builtAt: (obj.builtAt as number) ?? Date.now(),
+    backends: (obj.backends as import("@kli/api").BackendInfo[] | undefined) ?? [],
+    warnings: (obj.warnings as string[] | undefined) ?? [],
   } as CodeGraph;
 }
