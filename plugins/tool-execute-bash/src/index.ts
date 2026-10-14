@@ -138,7 +138,7 @@ Safety:
           timeout,
           encoding: "utf-8",
           maxBuffer: maxOutput * 2,
-          env: filterEnv(ctx),
+          env: filterEnv(resolvedCwd),
           stdio: ["ignore", "pipe", "pipe"],
         });
         const duration = Date.now() - start;
@@ -177,7 +177,7 @@ async function executeStreaming(
     const start = Date.now();
     const proc = spawn("bash", ["-c", command], {
       cwd,
-      env: filterEnv({ workspaceRoot: cwd } as any),
+      env: filterEnv(cwd),
     });
 
     let output = "";
@@ -229,7 +229,7 @@ async function executeStreaming(
   });
 }
 
-function filterEnv(ctx: { workspaceRoot?: string }): NodeJS.ProcessEnv {
+function filterEnv(workspaceRoot?: string): NodeJS.ProcessEnv {
   const allowed = new Set([
     "PATH", "HOME", "USER", "LANG", "TERM", "NODE_ENV",
     "TMPDIR", "PWD", "SHLVL", "HOSTNAME",
@@ -238,6 +238,6 @@ function filterEnv(ctx: { workspaceRoot?: string }): NodeJS.ProcessEnv {
   for (const [k, v] of Object.entries(process.env)) {
     if (allowed.has(k)) out[k] = v;
   }
-  if (ctx.workspaceRoot) out.PWD = ctx.workspaceRoot;
+  if (workspaceRoot) out.PWD = workspaceRoot;
   return out;
 }
