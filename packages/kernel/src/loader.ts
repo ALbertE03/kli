@@ -26,6 +26,120 @@ import type {
 import { BudgetSchema } from "@kli/api";
 import { resolvePath } from "./paths.js";
 
+/** A parsed version plus whether it had a prerelease tag (`-x`). */
+interface ParsedVersion {
+  parts: [number, number, number];
+  prerelease: string | null;
+}
+
+/**
+ * Parse a semver string into its numeric parts. Returns null for malformed
+ * strings. Leading `v`, a prerelease tag, and build metadata are tolerated.
+ */
+function parseSemver(v: string): ParsedVersion | null {
+  const m = v
+    .trim()
+    .replace(/^v/, "")
+    .match(/^(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
+  if (!m) return null;
+  const num = (s: string | undefined): number => {
+    if (s === undefined || s === "x" || s === "*") return 0;
+    return parseInt(s, 10);
+  };
+  const major = m[1];
+  if (major === undefined) return null;
+  return {
+    parts: [parseInt(major, 10), num(m[2]), num(m[3])],
+    prerelease: m[4] ?? null,
+  };
+}
+
+function cmp(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < 3; i++) {
+    const av = a[i] ?? 0;
+    const bv = b[i] ?? 0;
+    if (av !== bv) return av < bv ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Check a single comparator, e.g. ">=1.0.0", "^1.2.3", "~1.2.0", "1.x", "*".
+ * Supports caret and tilde ranges against the standard upper-bound rules.
+ */
+function satisfiesComparator(version: [number, number, number], raw: string): boolean {
+  const c = raw.trim();
+  if (c === "" || c === "*" || c === "x") return true;
+
+  const caret = c.match(/^\^\s*(.+)$/);
+  if (caret) {
+    const target = parseSemver(caret[1] ?? "");
+    if (!target) return false;
+    const [maj, min, pat] = target.parts;
+    const lower = cmp(version, target.parts) >= 0;
+    let upper: [number, number, number];
+    if (maj > 0) upper = [maj + 1, 0, 0];
+    else if (min > 0) upper = [0, min + 1, 0];
+    else upper = [0, 0, pat + 1];
+    return lower && cmp(version, upper) < 0;
+  }
+
+  const tilde = c.match(/^~\s*(.+)$/);
+  if (tilde) {
+    const target = parseSemver(tilde[1] ?? "");
+    if (!target) return false;
+    const [maj, min] = target.parts;
+    return (
+      cmp(version, target.parts) >= 0 &&
+      cmp(version, [maj, min + 1, 0]) < 0
+    );
+  }
+
+  const op = c.match(/^(>=|<=|>|<|=)?\s*(.+)$/);
+  if (!op) return false;
+  const operator = op[1] ?? "=";
+  const target = parseSemver(op[2] ?? "");
+  if (!target) return false;
+  const d = cmp(version, target.parts);
+  switch (operator) {
+    case ">=":
+      return d >= 0;
+    case "<=":
+      return d <= 0;
+    case ">":
+      return d > 0;
+    case "<":
+      return d < 0;
+    default:
+      return d === 0;
+  }
+}
+
+/**
+ * Validate a requires constraint against the kernel version.
+ *
+ * Supports the common semver range grammar:
+ *   - exact / partial: "1.2.3", "1.2", "1.x"
+ *   - comparators: ">=1.0.0", "<2.0.0", "=1.2.3"
+ *   - caret / tilde: "^1.2.3", "~1.2.0"
+ *   - AND (space-separated): ">=0.5 <1.0"
+ *   - OR ("||"): "^1.0.0 || ^2.0.0"
+ */
+function checkRequires(requires: string, kernelVersion: string): true | string {
+  const parsedKernel = parseSemver(kernelVersion);
+  if (!parsedKernel) return `Invalid kernel version: ${kernelVersion}`;
+  const kernel = parsedKernel.parts;
+
+  const alternatives = requires.split("||").map((s) => s.trim());
+  for (const alt of alternatives) {
+    const comparators = alt.split(/\s+/).filter(Boolean);
+    if (comparators.length === 0) return `Empty required constraint: "${requires}"`;
+    const ok = comparators.every((c) => satisfiesComparator(kernel, c));
+    if (ok) return true;
+  }
+  return `Kernel ${kernelVersion} does not satisfy required constraint "${requires}"`;
+}
+
 export class PluginLoader {
   private readonly cwd: string;
   private readonly workspaceRoot: string;
@@ -60,6 +174,17 @@ export class PluginLoader {
       }
       const parsed = validatePluginShape(candidate);
       const manifest = PluginManifestSchema.parse(parsed.manifest);
+
+      // Validate requires against kernel version
+      if (manifest.requires?.length) {
+        const kernelVersion = process.env.KLI_KERNEL_VERSION ?? "1.0.0";
+        for (const req of manifest.requires) {
+          const result = checkRequires(req, kernelVersion);
+          if (result !== true) {
+            throw new Error(`Plugin "${manifest.id}" rejected: ${result}`);
+          }
+        }
+      }
 
       await this.callSetup(parsed, manifest);
 
@@ -175,10 +300,11 @@ export interface LoadedPlugin {
 }
 
 const defaultLogger: Logger = {
-  debug: (m, meta) => console.debug(`[DEBUG] ${m}`, meta ?? ""),
-  info: (m, meta) => console.info(`[INFO]  ${m}`, meta ?? ""),
-  warn: (m, meta) => console.warn(`[WARN]  ${m}`, meta ?? ""),
-  error: (m, meta) => console.error(`[ERROR] ${m}`, meta ?? ""),
+  // Logs go to stderr so stdout stays reserved for assistant output / command results.
+  debug: (m, meta) => process.stderr.write(`[DEBUG] ${m} ${meta ? JSON.stringify(meta) : ""}\n`),
+  info: (m, meta) => process.stderr.write(`[INFO]  ${m} ${meta ? JSON.stringify(meta) : ""}\n`),
+  warn: (m, meta) => process.stderr.write(`[WARN]  ${m} ${meta ? JSON.stringify(meta) : ""}\n`),
+  error: (m, meta) => process.stderr.write(`[ERROR] ${m} ${meta ? JSON.stringify(meta) : ""}\n`),
 };
 
 const noopBus: Bus = { emit: () => {}, on: () => () => {} };

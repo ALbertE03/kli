@@ -22,6 +22,7 @@ import type {
   Budget,
   GraphSummary,
   Capability,
+  Policy,
 } from "@kli/api";
 import type { TaskRegistry } from "@kli/api";
 import type { PromptContext } from "@kli/api";
@@ -50,6 +51,8 @@ export interface LoopOptions {
   config?: Readonly<Record<string, unknown>>;
   signal?: AbortSignal;
   maxRetries?: number;
+  /** Called with each streamed assistant text delta, when the provider supports it. */
+  onToken?: (delta: string) => void;
 }
 
 export interface LoopResult {
@@ -65,7 +68,10 @@ const MAX_RETRIES_DEFAULT = 3;
 const RETRYABLE_CODES = new Set(["STALE", "RATE_LIMIT", "TIMEOUT"]);
 
 export class Loop {
-  constructor(private readonly opts: LoopOptions) {}
+  constructor(
+    private readonly opts: LoopOptions,
+    private readonly promptBuilder: PromptBuilder,
+  ) {}
 
   async run(): Promise<LoopResult> {
     const { taskId, mode, userMessage, registry, provider, bus, signal } =
@@ -77,6 +83,7 @@ export class Loop {
     let state: TaskState = this.initState(taskId, mode, userMessage);
     const toolCalls: LoopResult["toolCalls"] = [];
     let totalCost = 0;
+    let fatalError = false;
 
     while (!state.done && !(signal?.aborted ?? false)) {
       if (this.budgetExceeded(state.budget, signal)) {
@@ -117,22 +124,24 @@ export class Loop {
       const visibleTools = registry.toolsFor(mode, ctx);
       const visibleToolNames = new Set(visibleTools.map((t) => t.name));
 
-      // 2c: assemble system prompt
+      // 2c: assemble system prompt (reuse shared builder from kernel)
       const promptCtx = this.buildPromptContext(mode, visibleTools, userMessage);
       let systemPrompt = "";
       if (registry.fragments.length > 0) {
-        const pb = new PromptBuilder();
-        systemPrompt = await pb.build(registry.fragments, promptCtx, visibleToolNames);
+        systemPrompt = await this.promptBuilder.build(registry.fragments, promptCtx, visibleToolNames);
       }
 
       // 2d: provider step
+      const stepStart = Date.now();
       try {
         const result: StepResult = await provider.step(
           state,
           visibleTools,
           systemPrompt,
           signal ?? new AbortController().signal,
+          this.opts.onToken,
         );
+        const stepMs = Date.now() - stepStart;
 
         state = this.updateBudget(state, result.tokensIn, result.tokensOut, result.cost);
         totalCost += result.cost;
@@ -141,6 +150,7 @@ export class Loop {
           type: "model.response",
           tokens: result.tokensOut,
           cost: result.cost,
+          ms: stepMs,
         } as Event);
 
         if (
@@ -148,6 +158,7 @@ export class Loop {
           result.finishReason === "end_turn" ||
           result.finishReason === "error"
         ) {
+          if (result.finishReason === "error") fatalError = true;
           state = this.appendMessage(state, {
             role: "assistant",
             content: result.content ?? "",
@@ -157,6 +168,16 @@ export class Loop {
         }
 
         const calls = [...(result.toolCalls ?? [])];
+
+        // Record the assistant turn that requested these tools. Providers
+        // (OpenAI in particular) require the assistant `tool_calls` message to
+        // precede the corresponding `tool` result messages.
+        state = this.appendMessage(state, {
+          role: "assistant",
+          content: result.content ?? "",
+          toolCalls: calls.map((c) => ({ id: c.id, name: c.name, args: c.args })),
+        });
+
         if (calls.length === 0) {
           state = this.markDone(state);
           break;
@@ -166,7 +187,9 @@ export class Loop {
         const parallelGroups = this.groupCallsByExclusivity(calls, visibleTools);
         for (const group of parallelGroups) {
           if (group.length === 1) {
-            const r = await this.runToolCall(group[0]!, state, registry, bus, maxRetries, signal);
+            const first = group[0];
+            if (!first) continue;
+            const r = await this.runToolCall(first, state, registry, bus, maxRetries, signal);
             state = r.state;
             toolCalls.push(r.summary);
           } else {
@@ -181,6 +204,7 @@ export class Loop {
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
+        fatalError = true;
         state = this.appendMessage(state, {
           role: "assistant",
           content: `Error: ${msg}`,
@@ -191,7 +215,7 @@ export class Loop {
       state = { ...state, steps: state.steps + 1 };
     }
 
-    const status = this.finalize(state);
+    const status = this.finalize(state, fatalError);
     bus.emit({ type: "task.finished", status, cost: totalCost } as Event);
 
     return {
@@ -270,7 +294,7 @@ export class Loop {
       };
       const next = this.appendToolResult(state, tc.id, result);
       const ms = Date.now() - start;
-      bus.emit({ type: "tool.completed", name: tc.name, ok: false, ms } as Event);
+      bus.emit({ type: "tool.completed", name: tc.name, ok: false, ms, error: result.error, code: result.code } as Event);
       return { state: next, summary: { name: tc.name, ok: false, ms } };
     }
 
@@ -285,7 +309,7 @@ export class Loop {
       };
       const next = this.appendToolResult(state, tc.id, result);
       const ms = Date.now() - start;
-      bus.emit({ type: "tool.completed", name: tc.name, ok: false, ms } as Event);
+      bus.emit({ type: "tool.completed", name: tc.name, ok: false, ms, error: result.error, code: result.code } as Event);
       return { state: next, summary: { name: tc.name, ok: false, ms } };
     }
 
@@ -299,7 +323,31 @@ export class Loop {
       };
       const next = this.appendToolResult(state, tc.id, result);
       const ms = Date.now() - start;
-      bus.emit({ type: "tool.completed", name: tc.name, ok: false, ms } as Event);
+      bus.emit({ type: "tool.completed", name: tc.name, ok: false, ms, error: result.error, code: result.code } as Event);
+      return { state: next, summary: { name: tc.name, ok: false, ms } };
+    }
+
+    // Per-call policy gate (§4.6 step 2e). Modes enforce read-only/bash rules here.
+    const policyDecision = await this.policiesBeforeTool(
+      tool.name,
+      parsed.data as Record<string, unknown>,
+      state,
+      bus,
+    );
+    if (policyDecision.action === "veto" || policyDecision.action === "halt") {
+      bus.emit({
+        type: "policy.triggered",
+        name: tool.name,
+        reason: policyDecision.reason,
+      } as Event);
+      const result: ToolResult = {
+        ok: false,
+        error: policyDecision.reason,
+        code: policyDecision.action === "veto" ? "POLICY_DENIED" : "POLICY_HALT",
+      };
+      const next = this.appendToolResult(state, tc.id, result);
+      const ms = Date.now() - start;
+      bus.emit({ type: "tool.completed", name: tc.name, ok: false, ms, error: result.error, code: result.code } as Event);
       return { state: next, summary: { name: tc.name, ok: false, ms } };
     }
 
@@ -311,12 +359,16 @@ export class Loop {
         type: "tool.called",
         name: tool.name,
         argsHash: hashArgs(tc.args),
+        args: tc.args,
       } as Event);
+
+      // Notify policies of the impending call (they may observe/annotate).
+      await this.policiesOnToolCalled(tool.name, tc.args, state, bus);
 
       const execCtx = this.makePluginContext(state);
       let execResult: ToolResult;
       try {
-        execResult = await tool.execute(parsed.data, execCtx, signal!);
+        execResult = await tool.execute(parsed.data, execCtx, signal ?? new AbortController().signal);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         execResult = { ok: false, error: msg, code: "EXECUTION_ERROR" };
@@ -328,6 +380,8 @@ export class Loop {
         name: tool.name,
         ok: execResult.ok,
         ms,
+        error: execResult.ok ? undefined : execResult.error,
+        code: execResult.ok ? undefined : execResult.code,
       } as Event);
 
       const isRetryable =
@@ -417,8 +471,18 @@ export class Loop {
     };
   }
 
+  /**
+   * Policies that apply to the current mode: global policies (no `mode`) plus
+   * those explicitly scoped to the task's mode (e.g. plan-mode safety).
+   */
+  private activePolicies(state: TaskState): readonly Policy[] {
+    return this.opts.registry.policies.filter(
+      (p) => p.mode === undefined || p.mode === state.mode,
+    );
+  }
+
   private async policiesBeforeStep(state: TaskState, bus: Bus): Promise<PolicyDecision> {
-    for (const p of this.opts.registry.policies) {
+    for (const p of this.activePolicies(state)) {
       try {
         if (p.beforeStep) {
           const d = await p.beforeStep(state, bus);
@@ -433,6 +497,57 @@ export class Loop {
       }
     }
     return { action: "continue" };
+  }
+
+  /**
+   * Ask every policy whether the tool call may proceed. First veto/halt wins.
+   */
+  private async policiesBeforeTool(
+    name: string,
+    args: Record<string, unknown>,
+    state: TaskState,
+    bus: Bus,
+  ): Promise<PolicyDecision> {
+    for (const p of this.activePolicies(state)) {
+      try {
+        if (p.beforeTool) {
+          const d = await p.beforeTool({ name, args }, state, bus);
+          if (d.action !== "continue") return d;
+        }
+      } catch (err) {
+        bus.emit({
+          type: "policy.triggered",
+          name: p.name,
+          reason: err instanceof Error ? err.message : String(err),
+        } as Event);
+      }
+    }
+    return { action: "continue" };
+  }
+
+  /**
+   * Notify all policies about an impending tool call. Policies observe via
+   * `onEvent`; enforcement (veto/halt) happens through `beforeTool`/`beforeStep`.
+   */
+  private async policiesOnToolCalled(
+    toolName: string,
+    args: Record<string, unknown>,
+    state: TaskState,
+    bus: Bus,
+  ): Promise<void> {
+    for (const p of this.activePolicies(state)) {
+      try {
+        if (p.onEvent) {
+          await p.onEvent(
+            { type: "tool.called", name: toolName, argsHash: hashArgs(args), args } as Event,
+            state,
+            bus,
+          );
+        }
+      } catch {
+        // Policies must not crash the loop
+      }
+    }
   }
 
   private buildPromptContext(
@@ -486,14 +601,11 @@ export class Loop {
    *  - plan & ask: model self-declares done + policies continued
    *  - build: also requires ok tool result in last 3 steps
    */
-  private finalize(state: TaskState): "ok" | "error" | "halted" {
+  private finalize(state: TaskState, fatalError: boolean): "ok" | "error" | "halted" {
     if (!state.done) return "halted";
-    if (state.mode === "build") {
-      const tail = state.lastToolResults.slice(-3);
-      if (!tail.some((r) => r.ok)) {
-        return "error";
-      }
-    }
+    // Tool-level failures are data the model handles; only a provider/harness
+    // failure (bad response or thrown error) fails the task.
+    if (fatalError) return "error";
     return "ok";
   }
 

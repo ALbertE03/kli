@@ -4,7 +4,8 @@
  * Path: <workspaceRoot>/.kli/graph.json (renamed from .kiln per the KLI rename)
  * Contents: serialized CodeGraph + fileHashes.
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
+import { writeFile, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import type { CodeGraph, SymbolNode, SymbolEdge, LanguageStats, BackendInfo } from "@kli/api";
@@ -39,24 +40,24 @@ export class GraphCache {
     this.cachePath = join(this.kliDir, "graph.json");
   }
 
-  load(): GraphCacheData | null {
+  async load(): Promise<GraphCacheData | null> {
     try {
       if (!existsSync(this.cachePath)) return null;
-      const raw = readFileSync(this.cachePath, "utf-8");
+      const raw = await readFile(this.cachePath, "utf-8");
       return JSON.parse(raw) as GraphCacheData;
     } catch {
       return null;
     }
   }
 
-  save(graph: CodeGraph, fileHashes: Record<string, string>): void {
+  save(graph: CodeGraph, fileHashes: Record<string, string>): Promise<void> {
     const data: GraphCacheData = {
       version: 1,
       graph: this.serialize(graph),
       fileHashes,
     };
     ensureDirSync(this.kliDir);
-    writeFileSync(this.cachePath, JSON.stringify(data, null, 2), "utf-8");
+    return writeFile(this.cachePath, JSON.stringify(data, null, 2), "utf-8");
   }
 
   /**
@@ -83,9 +84,9 @@ export class GraphCache {
   }
 
   /** Hash a file's contents from disk. */
-  static hashFile(path: string): string {
+  static async hashFile(path: string): Promise<string> {
     try {
-      const content = readFileSync(path);
+      const content = await readFile(path);
       return createHash("sha256").update(content).digest("hex");
     } catch {
       return "";

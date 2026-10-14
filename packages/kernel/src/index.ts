@@ -17,6 +17,8 @@ export type { LoadedPlugin, PluginLoaderOptions } from "./loader.js";
 export { PromptBuilder } from "./prompt-builder.js";
 export { GraphCache } from "./graph-cache.js";
 export type { GraphCacheData } from "./graph-cache.js";
+export { buildGraph } from "./graph-builder.js";
+export type { BuildGraphResult } from "./graph-builder.js";
 export { Loop } from "./loop.js";
 export type { LoopOptions, LoopResult } from "./loop.js";
 export type { KernelBootOptions, TaskRunOptions, TaskRunResult, SessionMetadata } from "./kernel-types.js";
@@ -30,7 +32,10 @@ import { EventBus } from "./bus.js";
 import { PluginLoader } from "./loader.js";
 import { PromptBuilder } from "./prompt-builder.js";
 import { GraphCache } from "./graph-cache.js";
+import { buildGraph } from "./graph-builder.js";
+import type { BuildGraphResult } from "./graph-builder.js";
 import { Loop } from "./loop.js";
+import { IDENTITY_FRAGMENT } from "./identity.js";
 import type { KernelBootOptions, TaskRunOptions, TaskRunResult } from "./kernel-types.js";
 
 export { Kernel };
@@ -47,6 +52,7 @@ class Kernel {
     this.workspaceRoot = opts.workspaceRoot ?? process.cwd();
     this.bus = new EventBus();
     this.registry = new Registry();
+    this.registry.registerPromptFragment(IDENTITY_FRAGMENT, "kli.kernel");
     this.promptBuilder = new PromptBuilder();
     this.graphCache = new GraphCache(this.workspaceRoot);
     this.loader = new PluginLoader({
@@ -69,6 +75,12 @@ class Kernel {
     }
   }
 
+  /** Build and persist the code graph using all registered AST backends. */
+  async buildCodeGraph(opts: import("@kli/api").BuildOptions = {}): Promise<BuildGraphResult> {
+    const snapshot = this.registry.snapshot();
+    return buildGraph(snapshot.backends, this.workspaceRoot, this.graphCache, opts);
+  }
+
   /** Run one task to completion. */
   async run(opts: TaskRunOptions): Promise<TaskRunResult> {
     const snapshot = this.registry.snapshot();
@@ -87,7 +99,8 @@ class Kernel {
       config: opts.config,
       signal: opts.signal,
       graph: opts.graph ?? undefined,
-    });
+      onToken: opts.onToken,
+    }, this.promptBuilder);
     const result = await loop.run();
     return {
       status: result.status,

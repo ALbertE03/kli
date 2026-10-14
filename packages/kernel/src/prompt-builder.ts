@@ -96,7 +96,7 @@ export class PromptBuilder {
     for (const position of POSITION_ORDER) {
       const slot = fragments
         .filter((f) => f.position === position)
-        .filter((f) => this.include(f, visibleToolNames))
+        .filter((f) => this.include(f, visibleToolNames, ctx))
         .sort((a, b) => b.priority - a.priority);
 
       for (const f of slot) {
@@ -113,7 +113,10 @@ export class PromptBuilder {
   private include(
     f: PromptFragment,
     visibleToolNames: Set<string>,
+    ctx: PromptContext,
   ): boolean {
+    // Mode-scoped fragments never leak into other modes.
+    if (f.modes && !f.modes.includes(ctx.mode)) return false;
     if (f.alwaysInclude) return true;
     // Conditional fragment pattern: tools.<sourceTool>.<name>
     if (f.id.startsWith("tools.")) {

@@ -38,6 +38,8 @@ export interface TaskRunOptions {
   config?: Readonly<Record<string, unknown>>;
   signal?: AbortSignal;
   graph?: { summary?: GraphSummary };
+  /** Streamed assistant text deltas, when the provider supports streaming. */
+  onToken?: (delta: string) => void;
 }
 
 export interface TaskRunResult {

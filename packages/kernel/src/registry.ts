@@ -15,6 +15,7 @@ import type {
   PromptFragment,
   AstBackend,
   Mode,
+  ModePolicy,
 } from "@kli/api";
 
 export class ToolConflictError extends Error {
@@ -76,6 +77,20 @@ export class Registry implements IRegistry {
 
   registerPolicy(policy: Policy, source: string): void {
     this.policies.push({ policy, source });
+  }
+
+  /**
+   * Install a mode: its prompt fragment (scoped to the mode), its policy, and
+   * its tool-visibility filter. Type-safe alternative to calling
+   * `registerPromptFragment` + `setModeFilter` + `registerPolicy` by hand.
+   */
+  registerMode(policy: ModePolicy, source: string): void {
+    this.registerPromptFragment(
+      { ...policy.promptFragment, modes: [policy.mode] },
+      source,
+    );
+    this.registerPolicy(policy, source);
+    this.setModeFilter(policy.mode, (tool) => policy.allowedTools(tool));
   }
 
   registerSkill(skill: SkillManifest, source: string): void {
@@ -200,13 +215,5 @@ class FrozenRegistry implements TaskRegistry {
         return false;
       }
     });
-  }
-
-  setModeFilter(
-    _mode: Mode,
-    _filter: (tool: ToolDefinition, ctx: PluginContext) => boolean,
-  ): void {
-    // Frozen registry — setModeFilter is not applicable after snapshot
-    throw new Error("Cannot set mode filter on frozen registry");
   }
 }
