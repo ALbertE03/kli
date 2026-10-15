@@ -5,8 +5,9 @@
 
 import { createRequire } from "node:module";
 import { Kernel, resolvePath } from "@kli/kernel";
-import { toJsonSchema } from "@kli/api";
+import { AgentDefinitionSchema, createDelegationTool, defaultAgents, mergeAgents, toJsonSchema } from "@kli/api";
 import type {
+  AgentDefinition,
   Bus,
   Capability,
   GraphSummary,
@@ -41,6 +42,11 @@ Usage:
   kli session resume <id> [--project <name>]
   kli project create <name>
   kli project list
+  kli agent list
+  kli agent show <id>
+  kli agent add <id> --name <name> --description <text> [--mode plan|build|ask] [--model <id>] [--tools a,b,c] [--instructions <text>]
+  kli agent rm <id>
+  kli serve [--port <n>] [--host <h>]      Harness server for KLI Studio
   kli plugin list
   kli model list
   kli help
@@ -49,6 +55,10 @@ Modes:
   plan    Read-only exploration, outputs a numbered plan
   build   Implement, verify, iterate (all tools)
   ask     Answer questions about the codebase (read-only)
+
+Agents:
+  Subagents the main model delegates to through the "task" tool.
+  Definitions live in .kli/agents.json and override the built-ins.
 
 Options:
   --debug   Also show the assembled system prompt and full step info
@@ -187,6 +197,40 @@ function pluginSpecsFromConfig(config: Record<string, unknown>): string[] {
   const plugins = config["plugins"] as { include?: unknown } | undefined;
   const include = plugins?.include;
   return Array.isArray(include) ? (include as string[]) : [];
+}
+
+/* ------------------------------------------------------------------ *
+ * Agent helpers (.kli/agents.json)
+ * ------------------------------------------------------------------ */
+function agentsPath(kliDir: string): string {
+  return join(kliDir, "agents.json");
+}
+
+function loadUserAgents(kliDir: string): AgentDefinition[] {
+  const path = agentsPath(kliDir);
+  if (!existsSync(path)) return [];
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as { agents?: unknown };
+    if (!Array.isArray(parsed.agents)) return [];
+    const out: AgentDefinition[] = [];
+    for (const raw of parsed.agents) {
+      const result = AgentDefinitionSchema.safeParse(raw);
+      if (result.success) out.push(result.data);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+function saveUserAgents(kliDir: string, agents: AgentDefinition[]): void {
+  mkdirSync(kliDir, { recursive: true });
+  writeFileSync(agentsPath(kliDir), JSON.stringify({ version: 1, agents }, null, 2), "utf-8");
+}
+
+/** Built-in agents merged with the user's overrides. */
+function allAgents(kliDir: string): AgentDefinition[] {
+  return mergeAgents(defaultAgents(), loadUserAgents(kliDir));
 }
 
 /* ------------------------------------------------------------------ *
@@ -450,6 +494,119 @@ export async function main(): Promise<void> {
     return;
   }
 
+  if (cmd === "agent") {
+    if (subcmd === "list") {
+      const agents = allAgents(kliDir);
+      console.log("Subagents:");
+      for (const agent of agents) {
+        const tag = agent.builtin ? "built-in" : "custom  ";
+        const hidden = agent.hidden ? " hidden" : "";
+        console.log(
+          `  ${agent.id.padEnd(16)} ${tag}${hidden}  [${agent.mode}]  ${agent.model ?? "(parent model)"}`,
+        );
+        console.log(`    ${agent.description}`);
+      }
+      return;
+    }
+
+    if (subcmd === "show") {
+      const id = subArgs[0];
+      const agent = allAgents(kliDir).find((a) => a.id === id);
+      if (!agent) {
+        process.stderr.write(`Unknown agent: ${id}\n`);
+        process.exit(1);
+      }
+      console.log(JSON.stringify(agent, null, 2));
+      return;
+    }
+
+    if (subcmd === "add") {
+      const id = subArgs[0];
+      if (!id) {
+        process.stderr.write("Error: agent id required. Use: kli agent add <id> --name <name> --description <text>\n");
+        process.exit(1);
+      }
+      const flag = (name: string): string | undefined => {
+        const index = subArgs.indexOf(`--${name}`);
+        return index >= 0 ? subArgs[index + 1] : undefined;
+      };
+      const name = flag("name") ?? id;
+      const description = flag("description") ?? `Custom subagent "${name}".`;
+      const mode = (flag("mode") ?? "build") as Mode;
+      const model = flag("model");
+      const toolsRaw = flag("tools");
+      const instructions = flag("instructions") ?? "";
+      const hidden = subArgs.includes("--hidden");
+
+      const candidate = {
+        id,
+        name,
+        description,
+        mode,
+        model: model ?? null,
+        tools: toolsRaw ? toolsRaw.split(",").map((t) => t.trim()).filter(Boolean) : null,
+        instructions,
+        hidden,
+        builtin: false,
+      };
+      const parsed = AgentDefinitionSchema.safeParse(candidate);
+      if (!parsed.success) {
+        process.stderr.write(
+          `Invalid agent: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}\n`,
+        );
+        process.exit(1);
+      }
+      const existing = loadUserAgents(kliDir);
+      const next = existing.some((a) => a.id === parsed.data.id)
+        ? existing.map((a) => (a.id === parsed.data.id ? parsed.data : a))
+        : [...existing, parsed.data];
+      saveUserAgents(kliDir, next);
+      console.log(`Agent saved: ${parsed.data.id} (${parsed.data.mode})`);
+      return;
+    }
+
+    if (subcmd === "rm" || subcmd === "remove") {
+      const id = subArgs[0];
+      if (!id) {
+        process.stderr.write("Error: agent id required. Use: kli agent rm <id>\n");
+        process.exit(1);
+      }
+      if (defaultAgents().some((a) => a.id === id)) {
+        process.stderr.write(`"${id}" is a built-in agent; add an override instead of deleting it.\n`);
+        process.exit(1);
+      }
+      saveUserAgents(kliDir, loadUserAgents(kliDir).filter((a) => a.id !== id));
+      console.log(`Agent removed: ${id}`);
+      return;
+    }
+
+    console.log("Agent commands: list, show <id>, add <id> [...], rm <id>");
+    return;
+  }
+
+  if (cmd === "serve") {
+    const portIndex = rest.indexOf("--port");
+    const hostIndex = rest.indexOf("--host");
+    const port = portIndex >= 0 ? Number(rest[portIndex + 1]) : undefined;
+    const host = hostIndex >= 0 ? rest[hostIndex + 1] : undefined;
+    const mod = (await import("@kli/server")) as typeof import("@kli/server");
+    const server = new mod.KliServer({
+      workspaceRoot,
+      ...(port !== undefined && Number.isFinite(port) ? { port } : {}),
+      ...(host !== undefined ? { host } : {}),
+    });
+    const info = await server.listen();
+    console.log(`KLI harness server listening on ${info.url}`);
+    console.log(`Workspace: ${workspaceRoot}`);
+    console.log("Point KLI Studio at it: Settings → Conexión → Servidor del harness.");
+    const shutdown = (): void => {
+      void server.close().then(() => process.exit(0));
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
+    return;
+  }
+
   if (cmd === "plugin") {
     if (subcmd === "list") {
       await kernel.loadPlugins(pluginSpecs);
@@ -522,6 +679,9 @@ async function handleRun(
 
   await kernel.loadPlugins(pluginSpecs);
 
+  // User-defined subagent overrides from .kli/agents.json.
+  for (const agent of allAgents(kliDir)) kernel.registry.registerAgent(agent, "cli");
+
   const provider = await detectProvider();
   if (!provider) {
     console.log("ℹ️  No LLM provider configured.");
@@ -537,6 +697,45 @@ async function handleRun(
     costLimitUsd: envNum("KLI_COST_LIMIT", 5.0),
     deadlineMs: Date.now() + envNum("KLI_TIMEOUT", 120_000),
   };
+
+  const runCapabilities = new Set<Capability>([
+    "fs.read",
+    "fs.write",
+    "proc.exec",
+    "net.http",
+    "model.call",
+    "secrets.read",
+    "env.read",
+  ]);
+
+  // The agent the model delegates to through the `task` tool. Registered per
+  // run so it always closes over the live provider.
+  kernel.registry.registerTool(
+    createDelegationTool(
+      "task",
+      {
+        listAgents: () => kernel.listAgents(),
+        runAgent: (agent, task, signal, hooks) =>
+          kernel.runAgent({
+            agent,
+            task,
+            signal,
+            // The subagent must not re-enter the delegation tool.
+            denyTools: ["task"],
+            provider,
+            budget: { ...budget },
+            capabilities: runCapabilities,
+            secrets: collectSecrets(),
+            config,
+            ...(hooks.onToken ? { onToken: hooks.onToken } : {}),
+            ...(hooks.onReasoning ? { onReasoning: hooks.onReasoning } : {}),
+          }),
+      },
+      { budget: { ...budget }, exclusive: true },
+    ),
+    "kli.cli:agents",
+    100,
+  );
 
   const sessionId = resumeSessionId ?? `session_${Date.now()}`;
   const projectLabel = projectId ? ` [project: ${projectId}]` : "";

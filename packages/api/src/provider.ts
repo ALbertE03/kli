@@ -30,12 +30,23 @@ export interface ModelInfo {
   context_window?: number;
 }
 
+/**
+ * Streaming callbacks. `onToken` is kept as the positional argument for
+ * compatibility; `hooks` additionally carries reasoning ("thinking") deltas
+ * from models that expose them.
+ */
+export interface ProviderHooks {
+  onToken?: (delta: string) => void;
+  onReasoning?: (delta: string) => void;
+}
+
 export interface Provider {
   readonly name: string;
 
   /**
    * Produce one assistant turn. Implementations that support streaming SHOULD
-   * invoke `onToken` for each incremental text delta; `onToken` may be omitted.
+   * invoke the token callback for each incremental text delta; both callbacks
+   * may be omitted.
    */
   step(
     state: TaskState,
@@ -43,6 +54,7 @@ export interface Provider {
     systemPrompt: string,
     signal: AbortSignal,
     onToken?: (delta: string) => void,
+    hooks?: ProviderHooks,
   ): Promise<StepResult>;
 
   /** Cheap token estimate (used for budget accounting and prompt trimming). */

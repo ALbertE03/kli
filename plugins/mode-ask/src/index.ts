@@ -38,6 +38,8 @@ export const plugin: HarnessPlugin = {
           "graph_explain",
           "graph_working_set",
           "graph_path",
+          // Delegation: the parent may hand read-only scouting to a subagent.
+          "task",
         ],
         promptFragment: {
           id: "mode.ask",

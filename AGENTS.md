@@ -8,8 +8,10 @@ packages/
   api/      @kli/api     frozen Zod contracts (Rule #1: plugins import only here)
   kernel/   @kli/kernel  loop, registry, bus, loader, prompt builder, graph builder
   cli/      @kli/cli     `kli` binary (entry: dist/cli.js)
+  server/   @kli/server  HTTP + SSE bridge that exposes the harness to KLI Studio
+  studio/   @kli/studio  KLI Studio — web UI (Vite + React), talks to @kli/server
 plugins/
-  tool-*       read-file, edit-file, create-file, execute-bash, web-search
+  tool-*       read-file, edit-file, create-file, execute-bash, web-search, deep-search
   backend-*    AST extractors: ts-morph, python-ast, tree-sitter (WIP), config
   context-*    graph tools, MCP bridge, skills, system prompt sections
   mode-*       plan, build, ask (installed via registerMode)
@@ -57,6 +59,8 @@ kli tools  [--mode plan|build|ask]                      # visible tools + JSON S
 kli graph build | kli graph status                      # build/show the cached code graph
 kli session list | kli session resume <id>
 kli project create <name> | kli project list
+kli agent list | kli agent show <id> | kli agent add <id> [flags] | kli agent rm <id>
+kli serve [--port <n>] [--host <h>]        # harness server for KLI Studio
 kli plugin list | kli model list | kli help
 ```
 
@@ -89,6 +93,46 @@ nothing.
 4. **Frozen registry per task** — `TaskRegistry` is a read-only snapshot; do not mutate the registry mid-run.
 5. **Event bus only** — plugins communicate via the bus, never direct calls.
 6. **False edges worse than missing edges** — don't fabricate graph edges; an empty graph is safer than a wrong one.
+
+## Subagents
+
+Agents are a kernel-level concept, defined once in `@kli/api` (`agent.ts`):
+`AgentDefinitionSchema` (`id`, `name`, `description`, `mode`, `model`, `tools`,
+`instructions`, `hidden`, `builtin`). The pieces:
+
+- `defaultAgents()` — built-ins: `explorer`, `researcher`, `coder`, `reviewer`,
+  `orchestrator` (hidden). Registered by the `Kernel` constructor.
+- Overrides live in `<workspaceRoot>/.kli/agents.json`; `mergeAgents()` layers
+  them over the defaults. `kli agent add|rm` and the Studio UI both write it.
+- `createDelegationTool(name, deps, options)` builds the tool the parent model
+  calls to spawn a subagent. The *name* is the caller's choice (`"task"` in the
+  CLI and the server) — the kernel hard-codes no tool name (Rule #7).
+- `Kernel.runAgent()` runs the nested task: it scopes a registry snapshot to the
+  agent (mode filter ∩ `agent.tools`, plus `agentPromptFragment`), so the parent
+  registry is never mutated (Rule #4).
+- The delegation tool must be registered **per run** (it closes over the live
+  `Provider`), with `priority: 100` and `exclusive: true`. `registerTool` keeps
+  shadowed duplicates reachable via `Registry.everyTool()`.
+
+## KLI Studio (`packages/studio`)
+
+The web UI has five modes: `agent`, `chat`, `image`, `embeddings`, `audio`.
+Only **agent** uses the harness; the other four talk to the provider directly.
+
+- `src/lib/harness.ts` is the client for `@kli/server`. Agent mode is gated on
+  a successful `GET /api/health`, which returns the loaded plugins, tools per
+  mode, backends and skills.
+- The server streams named SSE events: `start`, `reasoning`, `token`,
+  `tool.start`, `tool.end`, `agent.start`, `agent.tool`, `agent.end`, `done`,
+  `error`. Reasoning deltas come from `reasoning_content` in the OpenAI
+  provider and are what the UI shows as "Razonamiento".
+- `Provider.step(state, tools, systemPrompt, signal, onToken?, hooks?)` — the
+  optional 6th `hooks: ProviderHooks` argument carries `onReasoning`. Keep the
+  positional `onToken` working for compatibility.
+- Tailwind tokens in `src/index.css` are **RGB triplets** (`--border: 210 20% 90%`),
+  never full `hsl()` values, or the opacity modifiers break.
+- `tsconfig.json` must not set `baseUrl` (deprecated in TS 6+); `paths` with
+  `"@/*": ["./src/*"]` works without it.
 
 ## Contracts & tool gotchas
 

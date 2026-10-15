@@ -18,6 +18,7 @@ import type {
   ToolDefinition,
   StepResult,
   ModelInfo,
+  ProviderHooks,
 } from "@kli/api";
 import { toJsonSchema } from "@kli/api";
 
@@ -148,7 +149,10 @@ export class OpenAiProvider implements Provider {
     systemPrompt: string,
     signal: AbortSignal,
     onToken?: (delta: string) => void,
+    hooks?: ProviderHooks,
   ): Promise<StepResult> {
+    const emitToken = hooks?.onToken ?? onToken;
+    const emitReasoning = hooks?.onReasoning;
     const toolDefs: OpenAIToolFunction[] = tools.map((t) => ({
       type: "function" as const,
       function: {
@@ -198,14 +202,14 @@ export class OpenAiProvider implements Provider {
     if (this.reasoningEffort !== undefined) params.reasoning_effort = this.reasoningEffort;
 
     try {
-      if (this.stream && onToken) {
+      if (this.stream && emitToken) {
         let emitted = false;
         const trackToken = (delta: string): void => {
           emitted = true;
-          onToken(delta);
+          emitToken(delta);
         };
         try {
-          return await this.streamStep(params, signal, trackToken);
+          return await this.streamStep(params, signal, trackToken, emitReasoning);
         } catch (streamErr) {
           // Some OpenAI-compatible routers reject `stream_options`. Only fall
           // back if we have not already emitted partial output.
@@ -258,6 +262,7 @@ export class OpenAiProvider implements Provider {
     params: Record<string, unknown>,
     signal: AbortSignal,
     onToken: (delta: string) => void,
+    onReasoning?: (delta: string) => void,
   ): Promise<StepResult> {
     const started = Date.now();
     const stream = (await this.client.chat.completions.create(
@@ -280,6 +285,9 @@ export class OpenAiProvider implements Provider {
       if (chunk.usage) usage = chunk.usage;
       if (!choice) continue;
       const delta = choice.delta;
+      // Reasoning models stream their chain of thought in a separate field;
+      // surface it so UIs can show a "thinking" block.
+      if (delta?.reasoning_content) onReasoning?.(delta.reasoning_content);
       if (delta?.content) {
         content += delta.content;
         onToken(delta.content);

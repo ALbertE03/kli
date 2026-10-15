@@ -54,6 +54,7 @@ export {
 // Provider
 export {
   type Provider,
+  type ProviderHooks,
   type StepResult,
   type ToolInvocation,
   type ModelInfo,
@@ -118,6 +119,25 @@ export {
   type ModePolicy,
   defineModePolicy,
 } from "./mode.js";
+
+// Agents (subagents)
+export {
+  AgentDefinitionSchema,
+  AgentsFileSchema,
+  agentPromptFragment,
+  createDelegationTool,
+  defaultAgents,
+  mergeAgents,
+  toAgentSummary,
+  type AgentDefinition,
+  type AgentsFile,
+  type AgentSummary,
+  type AgentRunResult,
+  type AgentRunHooks,
+  type DelegationArgs,
+  type DelegationDeps,
+  type DelegationToolOptions,
+} from "./agent.js";
 export {
   EventSchema,
   type Event,

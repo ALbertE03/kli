@@ -51,6 +51,19 @@ export interface LoopOptions {
   maxRetries?: number;
   /** Called with each streamed assistant text delta, when the provider supports it. */
   onToken?: (delta: string) => void;
+  /** Called with each streamed reasoning ("thinking") delta, when the model emits one. */
+  onReasoning?: (delta: string) => void;
+  /** Called as each tool call starts and finishes — used to drive live UI timelines. */
+  onToolActivity?: (event: ToolActivity) => void;
+}
+
+export interface ToolActivity {
+  phase: "start" | "end";
+  name: string;
+  args?: Record<string, unknown>;
+  ok?: boolean;
+  ms?: number;
+  error?: string;
 }
 
 export interface LoopResult {
@@ -138,6 +151,10 @@ export class Loop {
           systemPrompt,
           signal ?? new AbortController().signal,
           this.opts.onToken,
+          {
+            ...(this.opts.onToken ? { onToken: this.opts.onToken } : {}),
+            ...(this.opts.onReasoning ? { onReasoning: this.opts.onReasoning } : {}),
+          },
         );
         const stepMs = Date.now() - stepStart;
 
@@ -358,6 +375,7 @@ export class Loop {
         argsHash: hashArgs(tc.args),
         args: tc.args,
       } as Event);
+      this.opts.onToolActivity?.({ phase: "start", name: tool.name, args: tc.args });
 
       // Notify policies of the impending call (they may observe/annotate).
       await this.policiesOnToolCalled(tool.name, tc.args, state, bus);
@@ -380,6 +398,13 @@ export class Loop {
         error: execResult.ok ? undefined : execResult.error,
         code: execResult.ok ? undefined : execResult.code,
       } as Event);
+      this.opts.onToolActivity?.({
+        phase: "end",
+        name: tool.name,
+        ok: execResult.ok,
+        ms,
+        ...(execResult.ok ? {} : { error: execResult.error }),
+      });
 
       const isRetryable =
         !execResult.ok &&

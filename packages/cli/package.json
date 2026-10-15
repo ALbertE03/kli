@@ -20,6 +20,7 @@
     "@kli/kernel": "workspace:*",
     "@kli/provider-anthropic": "workspace:*",
     "@kli/provider-openai": "workspace:*",
+    "@kli/server": "workspace:*",
     "chalk": "^5.3.0",
     "clipanion": "^4.0.0-rc.4",
     "dotenv": "^18.0.7"

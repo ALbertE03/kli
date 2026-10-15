@@ -11,14 +11,20 @@ import type { Policy } from "./policy.js";
 import type { SkillManifest } from "./skill.js";
 import type { PromptFragment } from "./prompt.js";
 import type { Mode, ModePolicy } from "./mode.js";
+import type { AgentDefinition } from "./agent.js";
 
 export interface Registry {
   registerTool(tool: ToolDefinition, source: string, priority?: number): void;
   registerPolicy(policy: Policy, source: string): void;
   registerSkill(skill: SkillManifest, source: string): void;
-  registerPromptFragment(f: PromptFragment, source: string): void;
+  registerPromptFragment(fragment: PromptFragment, source: string): void;
   registerBackend(b: AstBackend): void;
   registerMcpServer(name: string, tools: ToolDefinition[]): void;
+  /**
+   * Register (or override) a subagent. Later registrations win, so a user's
+   * `.kli/agents.json` always overrides the built-in defaults.
+   */
+  registerAgent(agent: AgentDefinition, source: string): void;
 
   /**
    * Install a mode. Scopes the mode's prompt fragment to that mode and
@@ -57,7 +63,11 @@ export interface TaskRegistry {
   readonly skills: readonly SkillManifest[];
   readonly fragments: readonly PromptFragment[];
   readonly backends: readonly AstBackend[];
+  readonly agents: readonly AgentDefinition[];
   get(name: string): ToolDefinition;
   find(name: string): ToolDefinition | undefined;
   toolsFor(mode: Mode, ctx: PluginContext): ToolDefinition[];
+  /** Subagents visible to the model (hidden ones are excluded). */
+  agentsFor(mode: Mode): readonly AgentDefinition[];
+  agent(id: string): AgentDefinition | undefined;
 }
