@@ -25,13 +25,15 @@ pnpm install                          # install deps (Node ≥20, pnpm ≥10)
 pnpm build                            # build everything in workspace order
 pnpm typecheck                        # all packages — run after any type change
 pnpm exec eslint .                    # lint (flat config at repo root)
+pnpm clean                            # rm dist + tsbuildinfo everywhere
 ```
 
-CI runs `build → typecheck → eslint` in that order. No test suite exists.
+No test suite and no CI config live in this repo — verify with
+`build → typecheck → eslint`, in that order.
 
 Build a single package after editing it:
 ```bash
-pnpm --filter @kli/kernel build       # or @kli/api, @kli/cli, @kli/<plugin>
+pnpm --filter @kli/kernel build       # or @kli/api, @kli/cli, @kli/server, @kli/<plugin>
 ```
 
 **Rebuild before running.** The CLI and loader import `dist/`, never `src/` —
@@ -88,7 +90,7 @@ nothing.
 ## Architecture rules (non-negotiable)
 
 1. **Plugin isolation** — plugins import only from `@kli/api`. Never from `@kli/kernel`.
-2. **Capability enforcement** — every tool declares `capabilities` (`CapabilitySet`); the kernel gates execution.
+2. **Capability enforcement** — every tool declares `capabilities: readonly Capability[]`; the kernel gates execution.
 3. **Path safety** — every file path goes through `ctx.resolve()`, never `path.join` (Rule #3).
 4. **Frozen registry per task** — `TaskRegistry` is a read-only snapshot; do not mutate the registry mid-run.
 5. **Event bus only** — plugins communicate via the bus, never direct calls.
@@ -110,9 +112,17 @@ Agents are a kernel-level concept, defined once in `@kli/api` (`agent.ts`):
 - `Kernel.runAgent()` runs the nested task: it scopes a registry snapshot to the
   agent (mode filter ∩ `agent.tools`, plus `agentPromptFragment`), so the parent
   registry is never mutated (Rule #4).
-- The delegation tool must be registered **per run** (it closes over the live
-  `Provider`), with `priority: 100` and `exclusive: true`. `registerTool` keeps
-  shadowed duplicates reachable via `Registry.everyTool()`.
+- The delegation tool is registered **per run** (it closes over the live
+  `Provider`), with `priority: 100` and `exclusive: true`. `registerTool`
+  **replaces** a tool re-registered from the *same* source (so a long-lived host
+  like `kli serve` does not self-conflict every run); equal priority from
+  *different* sources still throws `ToolConflictError`. Shadowed duplicates stay
+  reachable via `Registry.everyTool()`.
+- A mode's `allowTools` must include the delegation tool name (`"task"` in the
+  CLI and server) or the parent silently cannot delegate — `mode-ask` and
+  `mode-plan` list it explicitly, `mode-build` passes `null` (all tools).
+  `Kernel.runAgent` also accepts `denyTools`; hosts pass `["task"]` so a subagent
+  cannot recurse into delegation.
 
 ## KLI Studio (`packages/studio`)
 
@@ -129,10 +139,21 @@ Only **agent** uses the harness; the other four talk to the provider directly.
 - `Provider.step(state, tools, systemPrompt, signal, onToken?, hooks?)` — the
   optional 6th `hooks: ProviderHooks` argument carries `onReasoning`. Keep the
   positional `onToken` working for compatibility.
-- Tailwind tokens in `src/index.css` are **RGB triplets** (`--border: 210 20% 90%`),
-  never full `hsl()` values, or the opacity modifiers break.
+- `@kli/server` rebuilds a `Provider` **per request** from the UI's
+  `{ baseUrl, apiKey, model }`; that is what makes provider/model switching work
+  with no reload.
+- Vite + React with a stricter `tsconfig.json` than the base (`noEmit`,
+  `moduleResolution: "bundler"`, `jsx: react-jsx`, `noUnusedLocals` /
+  `noUnusedParameters`). `pnpm build` runs its `vite build` and `pnpm typecheck`
+  covers it; after editing Studio run `pnpm --filter @kli/studio build`.
+- All five modes share one `messages` array and `usage` counter. State persists
+  to `localStorage` under `kli-studio-storage` (zustand `version: 2`); API keys
+  go to `sessionStorage` under `kli-studio-secrets`.
 - `tsconfig.json` must not set `baseUrl` (deprecated in TS 6+); `paths` with
   `"@/*": ["./src/*"]` works without it.
+- Tailwind tokens in `src/index.css` are **space-separated RGB triplets**
+  (`--border: 226 226 232`), never hex or `hsl()`, or opacity modifiers such as
+  `bg-primary/10` break.
 
 ## Contracts & tool gotchas
 
@@ -152,16 +173,19 @@ Only **agent** uses the harness; the other four talk to the provider directly.
   specific call.
 - `PluginManifest` needs `entrypoint: "./dist/index.js"`. Loader validates
   semver `requires` against `KLI_KERNEL_VERSION` (default `1.0.0`).
-- `Capability` is a union of fixed string literals (`"fs.read"`, `"proc.exec"`, etc.),
-  not arbitrary strings. `ReadonlySet<string>` is wrong for capability sets —
-  use `ReadonlySet<Capability>` or `Capabilities` (the exported alias).
+- `Capability` is a union of fixed string literals (`"fs.read"`, `"proc.exec"`, …),
+  not arbitrary strings. Type capability lists as `readonly Capability[]`
+  (`ToolDefinition.capabilities`) or `ReadonlySet<Capability>` (the set the kernel
+  passes when enforcing); never `string[]` / `ReadonlySet<string>`.
+  `Capabilities` is the exported `Set<Capability>` alias.
 
 ## ESLint
 
 - `@typescript-eslint/no-explicit-any` is an **error** — use `unknown` plus a narrow cast.
 - `no-non-null-assertion` is a warning; prefer guards.
 - `no-unused-vars` is **disabled** (relaxed convention).
-- Config ignores `**/dist/**`, `**/*.d.ts`, `.kli/**`.
+- Config ignores `**/dist/**`, `**/*.d.ts`, `.kli/**` and matches **only
+  `**/*.ts`** — `.tsx` (Studio React code) is never linted; `tsc` is the gate there.
 
 ## ts-morph gotchas (backend-ts-morph, ts-morph ^22)
 
