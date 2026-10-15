@@ -32,6 +32,7 @@ No test suite and no CI config live in this repo — verify with
 `build → typecheck → eslint`, in that order.
 
 Build a single package after editing it:
+
 ```bash
 pnpm --filter @kli/kernel build       # or @kli/api, @kli/cli, @kli/server, @kli/<plugin>
 ```

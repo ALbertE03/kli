@@ -14,7 +14,7 @@ import {
   upsertToolBlock,
 } from '@/lib/harness';
 import { DEFAULT_PROVIDER_ID, createDefaultProviders, findProvider } from '@/lib/providers';
-import { defaultModelForMode } from '@/lib/models';
+import { DEFAULT_IMAGE_MODEL, defaultModelForMode } from '@/lib/models';
 import { resolveApiKey, useSecrets } from '@/store/secrets';
 import {
   MODES,
@@ -30,6 +30,7 @@ import {
   type StoredMessage,
   type SubagentBlock,
   type Theme,
+  type Toast,
   type TokenStatus,
   type TimelineBlock,
   type Usage,
@@ -38,7 +39,7 @@ import {
 const emptyUsage: Usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
 function emptySelection(): Record<Mode, string | null> {
-  return { agent: null, chat: null, image: null, embeddings: null, audio: null };
+  return { agent: null, chat: null, image: DEFAULT_IMAGE_MODEL, embeddings: null, audio: null };
 }
 
 /** Module-scoped so an AbortController never reaches localStorage. */
@@ -48,6 +49,25 @@ let harnessController: AbortController | null = null;
 
 function newId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/* Panel width bounds — also enforced by the resize handles. */
+export const SIDEBAR_WIDTH_MIN = 220;
+export const SIDEBAR_WIDTH_MAX = 480;
+
+/** Conversation key used when no project is active. */
+const DEFAULT_CONVERSATION = 'default';
+
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+/** Messages persisted per conversation, capped and never mid-stream. */
+function settleMessages(messages: StoredMessage[]): StoredMessage[] {
+  return messages.slice(-200).map((message) =>
+    message.streaming ? { ...message, streaming: false } : message,
+  );
 }
 
 /** Applies a patch to the tool/subagent timeline of one message. */
@@ -106,6 +126,11 @@ export interface StudioState {
   lastLatencyMs: number | null;
 
   messages: StoredMessage[];
+  /**
+   * One conversation per project id (plus `default` when none is active) —
+   * switching projects swaps the visible transcript, keeping runs isolated.
+   */
+  projectMessages: Record<string, StoredMessage[]>;
   addMessage: (message: StoredMessage) => void;
   appendToMessage: (id: string, delta: string) => void;
   finalizeMessage: (id: string, patch?: Partial<StoredMessage>) => void;
@@ -125,6 +150,22 @@ export interface StudioState {
   theme: Theme;
   setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
+
+  /* ── UI shell (layout, palette, toasts) ────────────────────────────── */
+  sidebarCollapsed: boolean;
+  sidebarWidth: number;
+  toggleSidebar: () => void;
+  setSidebarCollapsed: (collapsed: boolean) => void;
+  setSidebarWidth: (width: number) => void;
+
+  paletteOpen: boolean;
+  setPaletteOpen: (open: boolean) => void;
+  togglePalette: () => void;
+
+  toasts: Toast[];
+  /** Queues a toast; returns its id so callers can dismiss it explicitly. */
+  pushToast: (toast: Omit<Toast, 'id'>) => string;
+  dismissToast: (id: string) => void;
 
   /* ── Harness (`kli serve`) ─────────────────────────────────────────── */
   harnessUrl: string;
@@ -152,6 +193,8 @@ export interface StudioState {
 
   attachments: Attachment[];
   attachPath: (path: string) => Promise<void>;
+  /** Attaches a locally picked file (name + text content). */
+  attachFile: (name: string, content: string) => void;
   removeAttachment: (id: string) => void;
   clearAttachments: () => void;
 
@@ -274,6 +317,7 @@ export const useStore = create<StudioState>()(
       lastLatencyMs: null,
 
       messages: [],
+      projectMessages: {},
       addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
       appendToMessage: (id, delta) =>
         set((state) => ({
@@ -318,6 +362,26 @@ export const useStore = create<StudioState>()(
       theme: 'dark',
       setTheme: (theme) => set({ theme }),
       toggleTheme: () => set((state) => ({ theme: state.theme === 'dark' ? 'light' : 'dark' })),
+
+      /* ── UI shell ─────────────────────────────────────────────────── */
+      sidebarCollapsed: false,
+      sidebarWidth: 264,
+      toggleSidebar: () => set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed })),
+      setSidebarCollapsed: (sidebarCollapsed) => set({ sidebarCollapsed }),
+      setSidebarWidth: (sidebarWidth) =>
+        set({ sidebarWidth: clamp(sidebarWidth, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX) }),
+
+      paletteOpen: false,
+      setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
+      togglePalette: () => set((state) => ({ paletteOpen: !state.paletteOpen })),
+
+      toasts: [],
+      pushToast: (toast) => {
+        const id = newId('toast');
+        set((state) => ({ toasts: [...state.toasts, { ...toast, id }] }));
+        return id;
+      },
+      dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) })),
 
       /* ── Harness ───────────────────────────────────────────────────── */
       harnessUrl: 'http://127.0.0.1:4317',
@@ -380,7 +444,22 @@ export const useStore = create<StudioState>()(
 
       harnessProjects: [],
       activeProjectId: null,
-      setActiveProject: (activeProjectId) => set({ activeProjectId }),
+      // Switching projects swaps the visible transcript: the current one is
+      // stashed under its project key and the target conversation is loaded,
+      // so every project keeps its own isolated session.
+      setActiveProject: (activeProjectId) =>
+        set((state) => {
+          if (state.activeProjectId === activeProjectId) return {};
+          const projectMessages = {
+            ...state.projectMessages,
+            [state.activeProjectId ?? DEFAULT_CONVERSATION]: state.messages,
+          };
+          return {
+            activeProjectId,
+            messages: projectMessages[activeProjectId ?? DEFAULT_CONVERSATION] ?? [],
+            projectMessages,
+          };
+        }),
       refreshProjects: async () => {
         if (!get().harnessEnabled && get().harnessStatus !== 'connected') return;
         try {
@@ -392,19 +471,29 @@ export const useStore = create<StudioState>()(
       },
       createProject: async (name, path) => {
         const { projects, project } = await harnessCreateProject(get().harnessUrl, name, path);
-        set({ harnessProjects: projects, activeProjectId: project.id });
+        set({ harnessProjects: projects });
+        get().setActiveProject(project.id);
       },
       removeProject: async (id) => {
         const { projects } = await harnessDeleteProject(get().harnessUrl, id);
-        set((state) => ({
-          harnessProjects: projects,
-          activeProjectId: state.activeProjectId === id ? null : state.activeProjectId,
-        }));
+        set((state) => {
+          const projectMessages = { ...state.projectMessages };
+          delete projectMessages[id];
+          return {
+            harnessProjects: projects,
+            projectMessages,
+            activeProjectId: state.activeProjectId === id ? null : state.activeProjectId,
+          };
+        });
       },
 
       attachments: [],
       attachPath: async (path) => {
-        const file = await readWorkspaceFile(get().harnessUrl, path);
+        const state = get();
+        const projectPath = state.harnessProjects.find(
+          (project) => project.id === state.activeProjectId,
+        )?.path;
+        const file = await readWorkspaceFile(state.harnessUrl, path, projectPath);
         const attachment: Attachment = {
           id: newId('att'),
           path: file.path,
@@ -412,11 +501,21 @@ export const useStore = create<StudioState>()(
           content: file.content,
           truncated: file.truncated,
         };
-        set((state) =>
-          state.attachments.some((item) => item.path === attachment.path)
-            ? state
-            : { attachments: [...state.attachments, attachment] },
+        set((current) =>
+          current.attachments.some((item) => item.path === attachment.path)
+            ? current
+            : { attachments: [...current.attachments, attachment] },
         );
+      },
+      attachFile: (name, content) => {
+        const attachment: Attachment = {
+          id: newId('att'),
+          path: name,
+          name,
+          content,
+          truncated: content.length > 200_000,
+        };
+        set((state) => ({ attachments: [...state.attachments, attachment] }));
       },
       removeAttachment: (id) =>
         set((state) => ({ attachments: state.attachments.filter((item) => item.id !== id) })),
@@ -600,8 +699,23 @@ export const useStore = create<StudioState>()(
     }),
     {
       name: 'kli-studio-storage',
-      version: 2,
+      version: 4,
       storage: createJSONStorage(() => localStorage),
+      // v2 → v3: conversations became per project (`projectMessages`), and the
+      // right workbench panel was removed from the shell.
+      // v3 → v4: the image mode now ships a default model (the catalogue has
+      // no image entries, so the selection used to start empty).
+      migrate: (persisted) => {
+        const state = (persisted ?? {}) as Record<string, unknown>;
+        state.projectMessages ??= {};
+        delete state.rightPanelOpen;
+        delete state.rightPanelWidth;
+        delete state.rightPanelTab;
+        const selection = (state.selectedModels ?? {}) as Record<string, string | null>;
+        if (!selection.image) selection.image = DEFAULT_IMAGE_MODEL;
+        state.selectedModels = selection;
+        return state as unknown as StudioState;
+      },
       partialize: (state) => ({
         mode: state.mode,
         providers: state.providers,
@@ -609,11 +723,14 @@ export const useStore = create<StudioState>()(
         selectedModels: state.selectedModels,
         theme: state.theme,
         usage: state.usage,
+        sidebarWidth: state.sidebarWidth,
+        sidebarCollapsed: state.sidebarCollapsed,
         harnessUrl: state.harnessUrl,
         harnessEnabled: state.harnessEnabled,
         activeProjectId: state.activeProjectId,
-        messages: state.messages.slice(-200).map((message) =>
-          message.streaming ? { ...message, streaming: false } : message,
+        messages: settleMessages(state.messages),
+        projectMessages: Object.fromEntries(
+          Object.entries(state.projectMessages).map(([key, list]) => [key, settleMessages(list)]),
         ),
       }),
     },

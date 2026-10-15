@@ -188,15 +188,6 @@ export function AudioMode() {
 
             <ModelField mode="audio" label="Modelo de voz" />
 
-            <Button
-              className="w-full"
-              onClick={() => void speak()}
-              loading={isStreaming}
-              disabled={!text.trim() || !model || connectionStatus !== 'connected'}
-            >
-              Generar voz
-            </Button>
-
             {error ? (
               <Alert variant="destructive" className="text-xs">
                 {error}
@@ -232,6 +223,19 @@ export function AudioMode() {
             </CardContent>
           </Card>
         ) : null}
+
+        {/* Botón generar independiente — siempre visible entre paneles */}
+        <div className="sticky bottom-0 z-10 rounded-xl border border-border bg-card/95 p-3 shadow-sm backdrop-blur">
+          <Button
+            className="w-full"
+            onClick={() => void speak()}
+            loading={isStreaming}
+            disabled={!text.trim() || !model || connectionStatus !== 'connected'}
+          >
+            <Speaker className="h-4 w-4" />
+            Generar voz
+          </Button>
+        </div>
       </div>
 
       <Card>

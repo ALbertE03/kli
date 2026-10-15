@@ -10,6 +10,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve as resolveFs, isAbsolute } from "node:path";
+import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import {
   AgentDefinitionSchema,
@@ -272,6 +273,8 @@ interface ChatRequest {
   message?: string;
   mode?: Mode;
   provider?: ProviderRequest;
+  /** Folder of the active project — the run is isolated inside it. */
+  projectPath?: string;
   budget?: { tokensTotal?: number; costLimitUsd?: number; deadlineMs?: number };
 }
 
@@ -282,8 +285,8 @@ export class KliServer {
   private readonly port: number;
   private readonly server: Server;
   private readonly running = new Set<AbortController>();
-  private kernel: Kernel | null = null;
-  private kernelSignature = "";
+  /** One isolated kernel per workspace root, each with its own signature. */
+  private readonly kernels = new Map<string, { kernel: Kernel; signature: string }>();
 
   constructor(opts: ServerOptions = {}) {
     this.workspace = new Workspace(opts.workspaceRoot ?? process.cwd());
@@ -316,30 +319,74 @@ export class KliServer {
     return new Promise((done) => this.server.close(() => done()));
   }
 
-  /** Boots (or reuses) the kernel for the current plugin/agent configuration. */
-  private async ensureKernel(): Promise<Kernel> {
-    const specs = this.workspace.pluginSpecs();
-    const signature = JSON.stringify({ specs, agents: this.workspace.userAgents() });
-    if (this.kernel && this.kernelSignature === signature) return this.kernel;
+  /**
+   * Boots (or reuses) the kernel for one workspace root. Each project folder
+   * gets its own Kernel, so tools, path resolution (Rule #3), the graph cache
+   * and `.kli/` state are fully isolated per project.
+   */
+  private async ensureKernel(root: string = this.workspace.root): Promise<Kernel> {
+    const normalized = resolveFs(root);
+    const ws = normalized === this.workspace.root ? this.workspace : new Workspace(normalized);
+
+    // A project with its own `.kli/config.js` uses its plugins; otherwise it
+    // inherits the host workspace's plugin list so tools keep working.
+    const ownSpecs = ws.pluginSpecs();
+    const specs = (ownSpecs.length > 0 ? ownSpecs : this.workspace.pluginSpecs()).map((spec) =>
+      // Relative entries (./plugins/…/dist/index.js) are resolved against the
+      // *host* workspace — the project folder does not contain them.
+      spec.startsWith(".") ? resolveFs(this.workspace.root, spec) : spec,
+    );
+
+    // Project-level agent overrides layer on top of the host's user agents.
+    const userAgents = [...this.workspace.userAgents()];
+    for (const agent of ws.userAgents()) {
+      const index = userAgents.findIndex((item) => item.id === agent.id);
+      if (index === -1) userAgents.push(agent);
+      else userAgents[index] = agent;
+    }
+
+    const signature = JSON.stringify({ root: normalized, specs, agents: userAgents });
+    const cached = this.kernels.get(normalized);
+    if (cached && cached.signature === signature) return cached.kernel;
 
     const kernel = new Kernel({
-      workspaceRoot: this.workspace.root,
+      workspaceRoot: normalized,
       logger: silentLogger,
       capabilities: new Set<Capability>(CAPABILITIES),
     });
-    for (const agent of this.workspace.agents()) kernel.registry.registerAgent(agent, "workspace");
+    for (const agent of mergeAgents(defaultAgents(), userAgents)) {
+      kernel.registry.registerAgent(agent, "workspace");
+    }
     await kernel.loadPlugins(specs);
 
-    this.kernel = kernel;
-    this.kernelSignature = signature;
+    this.kernels.set(normalized, { kernel, signature });
     return kernel;
   }
 
-  /** Drops the cached kernel so the next call re-reads config and agents. */
+  /** Drops every cached kernel so the next call re-reads config and agents. */
   async reload(): Promise<Kernel> {
-    this.kernelSignature = "";
-    this.kernel = null;
+    this.kernels.clear();
     return this.ensureKernel();
+  }
+
+  /**
+   * Resolves a project folder to an absolute existing directory. Without a
+   * `projectPath` the host workspace root is used, preserving old behaviour.
+   * Throws when the folder does not exist or is not a directory.
+   */
+  private resolveProjectRoot(projectPath?: string): string {
+    if (projectPath === undefined || projectPath.trim() === "") return this.workspace.root;
+    const abs = isAbsolute(projectPath) ? projectPath : resolveFs(this.workspace.root, projectPath);
+    if (!existsSync(abs)) throw new Error(`Project folder does not exist: ${abs}`);
+    if (!statSync(abs).isDirectory()) throw new Error(`Project path is not a folder: ${abs}`);
+    return abs;
+  }
+
+  /** Config for one root, falling back to the host workspace's config. */
+  private configFor(root: string): Record<string, unknown> {
+    if (root === this.workspace.root) return this.workspace.config();
+    const own = new Workspace(root).config();
+    return Object.keys(own).length > 0 ? own : this.workspace.config();
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -384,6 +431,8 @@ export class KliServer {
         return this.chat(req, res);
       case "POST /api/read":
         return this.read(req, res);
+      case "GET /api/fs/dirs":
+        return this.listDirs(url, res);
       case "GET /api/models":
         return this.listModels(req, res);
       case "GET /api/graph":
@@ -487,10 +536,13 @@ export class KliServer {
   }
 
   private async read(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const body = (await this.body(req)) as { path?: string };
+    const body = (await this.body(req)) as { path?: string; projectPath?: string };
     if (!body.path) return this.json(res, 400, { error: "path is required" });
     try {
-      const abs = this.workspace.safeResolve(body.path);
+      // Files are resolved inside the project folder when one is active, so
+      // relative paths never leak into (or out of) another project.
+      const root = this.resolveProjectRoot(body.projectPath);
+      const abs = resolvePath(body.path, root);
       if (!existsSync(abs)) return this.json(res, 404, { error: "File not found" });
       if (statSync(abs).isDirectory()) return this.json(res, 400, { error: "Path is a directory" });
       const content = readFileSync(abs, "utf-8");
@@ -500,6 +552,37 @@ export class KliServer {
         name: body.path.split("/").pop() ?? body.path,
         content: content.length > max ? `${content.slice(0, max)}\n…[truncated]` : content,
         truncated: content.length > max,
+      });
+    } catch (err) {
+      this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Lists the sub-folders of a directory so the UI can browse the real local
+   * disk and point a project at any folder on this machine. Browsers cannot
+   * expose absolute paths through `<input type="file">`, which is why the
+   * folder picker goes through the harness server instead.
+   */
+  private listDirs(url: URL, res: ServerResponse): void {
+    const raw = url.searchParams.get("path");
+    const start = raw && raw.trim() !== "" ? raw : homedir();
+    try {
+      const abs = isAbsolute(start) ? resolveFs(start) : resolveFs(this.workspace.root, start);
+      if (!existsSync(abs)) return this.json(res, 404, { error: `Folder not found: ${abs}` });
+      if (!statSync(abs).isDirectory()) return this.json(res, 400, { error: "Path is not a folder" });
+      // Dot-folders (.git, .kli, …) are noise in a project picker; the user can
+      // still paste a hidden path manually in the create-project form.
+      const folders = readdirSync(abs, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+        .map((entry) => entry.name)
+        .sort((a, b) => a.localeCompare(b, "es"));
+      this.json(res, 200, {
+        path: abs,
+        parent: abs === resolveFs("/") ? null : resolveFs(abs, ".."),
+        home: homedir(),
+        workspaceRoot: this.workspace.root,
+        folders,
       });
     } catch (err) {
       this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
@@ -557,6 +640,16 @@ export class KliServer {
       return this.json(res, 400, { error: "provider.baseUrl and provider.model are required" });
     }
 
+    // Resolve the project folder *before* the SSE stream starts so a bad path
+    // surfaces as a plain 400 instead of a mid-stream `error` event. The whole
+    // run (tools, path resolution, graph) is isolated inside this root.
+    let runRoot: string;
+    try {
+      runRoot = this.resolveProjectRoot(body.projectPath);
+    } catch (err) {
+      return this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+    }
+
     res.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
@@ -578,10 +671,10 @@ export class KliServer {
     });
 
     try {
-      const kernel = await this.ensureKernel();
+      const kernel = await this.ensureKernel(runRoot);
       const provider = await createProvider(requestedProvider);
       const mode: Mode = MODES.includes(body.mode as Mode) ? (body.mode as Mode) : "build";
-      const config = this.workspace.config();
+      const config = this.configFor(runRoot);
       const secrets = collectSecrets();
 
       const makeBudget = () => ({
@@ -610,6 +703,8 @@ export class KliServer {
               signal,
               // The subagent must not re-enter the delegation tool.
               denyTools: ["task"],
+              // Run inside the project folder, never the server's own cwd.
+              cwd: runRoot,
               // An agent may pin its own model; otherwise it inherits the request's.
               provider: agent.model
                 ? await createProvider({ ...requestedProvider, model: agent.model })
@@ -643,13 +738,14 @@ export class KliServer {
         mode,
         model: requestedProvider.model,
         agents: kernel.listAgents().filter((agent) => !agent.hidden).map((agent) => agent.id),
-        tools: kernel.registry.snapshot().toolsFor(mode, stubContext(this.workspace.root)).length,
+        tools: kernel.registry.snapshot().toolsFor(mode, stubContext(runRoot)).length,
       });
 
       const result = await kernel.run({
         taskId: runId,
         mode,
         message: body.message,
+        cwd: runRoot,
         budget: makeBudget(),
         provider,
         capabilities: new Set<Capability>(CAPABILITIES),

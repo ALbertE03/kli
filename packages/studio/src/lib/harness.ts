@@ -129,12 +129,39 @@ export function deleteProject(baseUrl: string, id: string): Promise<{ projects: 
 export function readWorkspaceFile(
   baseUrl: string,
   path: string,
+  projectPath?: string,
 ): Promise<{ path: string; name: string; content: string; truncated: boolean }> {
   return request<{ path: string; name: string; content: string; truncated: boolean }>(
     baseUrl,
     '/api/read',
-    { method: 'POST', body: JSON.stringify({ path }) },
+    {
+      method: 'POST',
+      body: JSON.stringify(projectPath ? { path, projectPath } : { path }),
+    },
   );
+}
+
+/* ── Local disk browsing (folder picker) ───────────────────────────────── */
+
+export interface DirListing {
+  path: string;
+  parent: string | null;
+  home: string;
+  workspaceRoot: string;
+  folders: string[];
+}
+
+/**
+ * Lists the sub-folders of a directory on the machine running `kli serve`.
+ * Without a path it starts at the user's home folder.
+ */
+export function listFolders(
+  baseUrl: string,
+  path?: string,
+  signal?: AbortSignal,
+): Promise<DirListing> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : '';
+  return request<DirListing>(baseUrl, `/api/fs/dirs${query}`, { method: 'GET' }, signal);
 }
 
 /* ── Chat (SSE) ────────────────────────────────────────────────────────── */

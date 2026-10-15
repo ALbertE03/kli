@@ -38,3 +38,38 @@ export function useDebounced<T>(value: T, delay = 200): T {
   }, [value, delay]);
   return debounced;
 }
+
+/**
+ * Auto-grows a `<textarea>` to fit its content up to `maxHeight` px, then lets
+ * it scroll. Returns the ref to attach to the element.
+ */
+export function useAutoGrow(
+  value: string,
+  maxHeight = 192,
+): React.RefObject<HTMLTextAreaElement> {
+  const ref = React.useRef<HTMLTextAreaElement>(null);
+  React.useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    element.style.height = 'auto';
+    element.style.height = `${Math.min(element.scrollHeight, maxHeight)}px`;
+  }, [value, maxHeight]);
+  return ref;
+}
+
+/** Reactive `window.matchMedia`. Used to switch panels between static and drawer. */
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = React.useState(
+    () => typeof window !== 'undefined' && window.matchMedia(query).matches,
+  );
+
+  React.useEffect(() => {
+    const list = window.matchMedia(query);
+    const onChange = () => setMatches(list.matches);
+    onChange();
+    list.addEventListener('change', onChange);
+    return () => list.removeEventListener('change', onChange);
+  }, [query]);
+
+  return matches;
+}

@@ -5,6 +5,13 @@ interface ModeMatcher {
   patterns: RegExp;
 }
 
+/**
+ * Default image model. FreeLLMAPI's image endpoint only accepts `auto` or a
+ * *provider* model id (e.g. a Cloudflare `@cf/…` path) — its chat catalogue
+ * lists no image models, so without this the image mode would start empty.
+ */
+export const DEFAULT_IMAGE_MODEL = '@cf/black-forest-labs/flux-2-klein-9b';
+
 const MATCHERS: ModeMatcher[] = [
   {
     mode: 'image',
@@ -59,5 +66,11 @@ export function defaultModelForMode(models: ModelInfo[], mode: Mode, hint?: stri
     if (previous) return previous;
   }
   if (mode === 'chat' || mode === 'agent') return preferredChatModel(models);
-  return candidates[0];
+  if (candidates.length > 0) return candidates[0];
+
+  // The catalogue doesn't advertise this modality (FreeLLMAPI lists chat
+  // models only): image/embedding/audio ids are typed by hand in ModelField,
+  // so keep the known id instead of wiping the selection on every refresh.
+  const typed = hint ?? (mode === 'image' ? DEFAULT_IMAGE_MODEL : undefined);
+  return typed ? { id: typed, name: typed, provider: '', owner: '', available: true } : undefined;
 }

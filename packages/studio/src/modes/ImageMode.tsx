@@ -1,16 +1,32 @@
 /**
  * KLI — Image mode
  *
- * Text-to-image through the active provider (FreeLLMAPI routes to Cloudflare
- * Workers AI by default).
+ * Text-to-image through the active provider. FreeLLMAPI routes to Cloudflare
+ * Workers AI, whose imagen endpoint only accepts `auto` or a provider model id
+ * (hence the `@cf/black-forest-labs/…` default) and ignores `n`, so the client
+ * asks for the missing images one round trip at a time (see `generateImage`).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, ImageOff, Trash2, Wand2 } from 'lucide-react';
-import { Alert, Badge, Button, Card, CardContent, CardHeader, CardTitle, Chip, EmptyState, Input, Textarea } from '@/components/ui';
+import { Check, Copy, Download, ImageOff, Maximize2, Trash2, Wand2 } from 'lucide-react';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Chip,
+  EmptyState,
+  Input,
+  Progress,
+  Textarea,
+} from '@/components/ui';
+import { ImageLightbox } from '@/components/ImageLightbox';
 import { ModelField } from '@/components/ModelField';
 import { ApiError, generateImage } from '@/lib/api';
-import { cn, createId, formatRelativeTime } from '@/lib/utils';
+import { createId, formatRelativeTime } from '@/lib/utils';
 import { useActiveProvider, useStore } from '@/store';
 import { resolveApiKey, useSecrets } from '@/store/secrets';
 import type { GeneratedImage } from '@/types';
@@ -31,6 +47,42 @@ const SIZES = [
 ] as const;
 
 const COUNTS = [1, 2, 3, 4];
+const MAX_GALLERY = 32;
+
+/* ── Saving helpers ────────────────────────────────────────────────────── */
+
+const EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/jpg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+};
+
+function imageExtension(url: string): string {
+  if (url.startsWith('data:')) {
+    const end = url.indexOf(';');
+    const mime = url.slice(5, end === -1 ? undefined : end);
+    return EXTENSIONS[mime] ?? 'png';
+  }
+  const path = url.split(/[?#]/)[0] ?? '';
+  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  return EXTENSIONS[`image/${ext}`] ?? 'png';
+}
+
+function imageFilename(image: GeneratedImage): string {
+  const stamp = new Date(image.createdAt).toISOString().replace(/:/g, '-').slice(0, 19);
+  return `kli-${stamp}-${image.id.slice(-4)}.${imageExtension(image.url)}`;
+}
+
+function triggerDownload(href: string, filename: string) {
+  const anchor = document.createElement('a');
+  anchor.href = href;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+}
 
 export function ImageMode() {
   const provider = useActiveProvider();
@@ -40,6 +92,7 @@ export function ImageMode() {
   const isStreaming = useStore((state) => state.isStreaming);
   const setStreaming = useStore((state) => state.setStreaming);
   const connectionStatus = useStore((state) => state.connectionStatus);
+  const pushToast = useStore((state) => state.pushToast);
 
   const [prompt, setPrompt] = useState('');
   const [style, setStyle] = useState<string>(STYLES[0].value);
@@ -47,6 +100,8 @@ export function ImageMode() {
   const [count, setCount] = useState(1);
   const [seed, setSeed] = useState('');
   const [gallery, setGallery] = useState<GeneratedImage[]>([]);
+  const [progress, setProgress] = useState<{ received: number; total: number } | null>(null);
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -63,33 +118,46 @@ export function ImageMode() {
     abortRef.current = controller;
     setStreaming(true);
     setError(null);
+    setProgress({ received: 0, total: count });
 
-    const fullPrompt = seed
-      ? `${text}. Estilo: ${activeStyle.hint}. seed: ${seed}`
-      : `${text}. Estilo: ${activeStyle.hint}`;
+    const fullPrompt = `${text}. Estilo: ${activeStyle.hint}`;
+    let received = 0;
 
     try {
-      const results = await generateImage(provider, apiKey, selectedModel, fullPrompt, {
+      await generateImage(provider, apiKey, selectedModel, fullPrompt, {
         size,
         count,
+        seed: seed ? Number(seed) : undefined,
         signal: controller.signal,
+        onBatch: (batch) => {
+          received += batch.length;
+          const created: GeneratedImage[] = batch.map((result, position) => ({
+            id: createId('img'),
+            url: result.url,
+            prompt: text,
+            model: selectedModel,
+            createdAt: Date.now() + position,
+          }));
+          setGallery((current) => [...created, ...current].slice(0, MAX_GALLERY));
+          setProgress({ received: Math.min(received, count), total: count });
+        },
       });
-      const created: GeneratedImage[] = results.map((result) => ({
-        id: createId('img'),
-        url: result.url,
-        prompt: text,
-        model: selectedModel,
-        createdAt: Date.now(),
-      }));
-      setGallery((current) => [...created, ...current].slice(0, 24));
+      if (received > 0 && received === count) {
+        pushToast({
+          variant: 'success',
+          title: count === 1 ? 'Imagen generada' : `${count} imágenes generadas`,
+        });
+      }
     } catch (cause) {
       if (controller.signal.aborted) return;
+      const partial = received > 0 ? `${received} de ${count} imágenes se generaron antes del error. ` : '';
       setError(
         cause instanceof ApiError
-          ? `${cause.message}${cause.status === 500 ? ' · revisa que el proveedor tenga credenciales para el motor de imágenes.' : ''}`
-          : 'Error inesperado al generar la imagen',
+          ? `${partial}${cause.message}${cause.status === 500 ? ' · revisa que el proveedor tenga credenciales para el motor de imágenes.' : ''}`
+          : `${partial}Error inesperado al generar la imagen`,
       );
     } finally {
+      setProgress(null);
       if (!controller.signal.aborted) setStreaming(false);
       abortRef.current = null;
     }
@@ -105,6 +173,7 @@ export function ImageMode() {
     size,
     count,
     setStreaming,
+    pushToast,
   ]);
 
   const copyPrompt = useCallback(async (image: GeneratedImage) => {
@@ -116,6 +185,74 @@ export function ImageMode() {
       /* clipboard blocked */
     }
   }, []);
+
+  const saveImage = useCallback(
+    async (image: GeneratedImage, announce = true): Promise<boolean> => {
+      const filename = imageFilename(image);
+      try {
+        const response = await fetch(image.url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        const href = URL.createObjectURL(blob);
+        triggerDownload(href, filename);
+        window.setTimeout(() => URL.revokeObjectURL(href), 30_000);
+        if (announce) pushToast({ variant: 'success', title: 'Imagen guardada', description: filename });
+        return true;
+      } catch {
+        if (image.url.startsWith('data:')) {
+          triggerDownload(image.url, filename);
+          if (announce) pushToast({ variant: 'success', title: 'Imagen guardada', description: filename });
+          return true;
+        }
+        // Cross-origin images without CORS can't be fetched: let the browser
+        // show it so the user can save it manually.
+        window.open(image.url, '_blank', 'noopener,noreferrer');
+        if (announce) {
+          pushToast({
+            variant: 'info',
+            title: 'Imagen abierta en otra pestaña',
+            description: 'Guárdala con clic derecho → «Guardar imagen como…»',
+          });
+        }
+        return false;
+      }
+    },
+    [pushToast],
+  );
+
+  const saveAll = useCallback(async () => {
+    const images = [...gallery].reverse();
+    let saved = 0;
+    for (const image of images) {
+      if (await saveImage(image, false)) saved += 1;
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+    }
+    pushToast(
+      saved > 0
+        ? {
+            variant: 'success',
+            title: `${saved} ${saved === 1 ? 'imagen guardada' : 'imágenes guardadas'}`,
+          }
+        : { variant: 'warning', title: 'No se pudo guardar', description: 'Descarga cada imagen manualmente.' },
+    );
+  }, [gallery, saveImage, pushToast]);
+
+  const removeImage = useCallback(
+    (image: GeneratedImage) => {
+      const index = gallery.findIndex((item) => item.id === image.id);
+      const remaining = gallery.filter((item) => item.id !== image.id);
+      setGallery(remaining);
+      setLightboxIndex((openIndex) => {
+        if (openIndex === null) return null;
+        if (remaining.length === 0) return null;
+        if (index >= 0 && index < openIndex) return openIndex - 1;
+        return Math.min(openIndex, remaining.length - 1);
+      });
+    },
+    [gallery],
+  );
+
+  const busyHint = progress ? `Generando ${progress.received}/${progress.total}…` : 'Generando…';
 
   return (
     <div className="grid flex-1 gap-4 lg:grid-cols-2">
@@ -188,10 +325,21 @@ export function ImageMode() {
 
           <ModelField mode="image" label="Modelo de imagen" />
 
+          {count > 1 ? (
+            <p className="text-[11px] text-muted-foreground">
+              Si el proveedor ignora la cantidad, KLI pide las imágenes que falten una a una hasta completar las{' '}
+              {count}.
+            </p>
+          ) : null}
+
           {error ? (
             <Alert variant="destructive" className="text-xs">
               {error}
             </Alert>
+          ) : null}
+
+          {progress && progress.total > 1 ? (
+            <Progress value={(progress.received / progress.total) * 100} label="Progreso de generación" />
           ) : null}
 
           <div className="flex items-center gap-2">
@@ -201,13 +349,14 @@ export function ImageMode() {
               disabled={!prompt.trim() || !selectedModel || connectionStatus !== 'connected'}
               className="flex-1"
             >
-              {isStreaming ? 'Generando…' : 'Generar'}
+              {isStreaming ? busyHint : count > 1 ? `Generar ${count}` : 'Generar'}
             </Button>
             {isStreaming ? (
               <Button
                 variant="outline"
                 onClick={() => {
                   abortRef.current?.abort();
+                  setProgress(null);
                   setStreaming(false);
                 }}
               >
@@ -219,8 +368,21 @@ export function ImageMode() {
       </Card>
 
       <Card className="flex flex-col">
-        <CardHeader>
-          <CardTitle>Galería</CardTitle>
+        <CardHeader className="flex flex-wrap items-center justify-between gap-2 space-y-0">
+          <CardTitle className="flex items-center gap-2">
+            Galería
+            {gallery.length > 0 ? (
+              <Badge variant="secondary" className="font-mono">
+                {gallery.length}
+              </Badge>
+            ) : null}
+          </CardTitle>
+          {gallery.length > 1 ? (
+            <Button size="sm" variant="outline" onClick={() => void saveAll()}>
+              <Download className="h-3.5 w-3.5" />
+              Guardar todas
+            </Button>
+          ) : null}
         </CardHeader>
         <CardContent className="flex-1">
           {gallery.length === 0 ? (
@@ -231,32 +393,48 @@ export function ImageMode() {
             />
           ) : (
             <div className="grid grid-cols-2 gap-3">
-              {gallery.map((image) => (
+              {gallery.map((image, index) => (
                 <figure
                   key={image.id}
-                  className={cn('group relative overflow-hidden rounded-lg border border-border bg-muted/30')}
+                  className="group relative overflow-hidden rounded-lg border border-border bg-muted/30"
                 >
-                  <img
-                    src={image.url}
-                    alt={image.prompt}
-                    loading="lazy"
-                    className="aspect-square w-full object-cover"
-                  />
-                  <figcaption className="space-y-1 p-2">
-                    <p className="line-clamp-2 text-[11px] text-muted-foreground">{image.prompt}</p>
-                    <div className="flex items-center justify-between gap-1">
-                      <Badge variant="outline" className="max-w-[9rem] truncate">
-                        {image.model}
-                      </Badge>
-                      <span className="text-[10px] text-muted-foreground">
-                        {formatRelativeTime(image.createdAt)}
-                      </span>
-                    </div>
-                  </figcaption>
-                  <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+                  <button
+                    type="button"
+                    onClick={() => setLightboxIndex(index)}
+                    title="Ampliar"
+                    className="block w-full cursor-zoom-in"
+                  >
+                    <img
+                      src={image.url}
+                      alt={image.prompt}
+                      loading="lazy"
+                      className="aspect-[4/3] w-full bg-black/30 object-contain transition-transform duration-200 group-hover:scale-[1.02]"
+                    />
+                  </button>
+
+                  <div className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                     <Button
                       size="icon"
                       variant="secondary"
+                      className="h-7 w-7"
+                      title="Guardar imagen"
+                      onClick={() => void saveImage(image)}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="secondary"
+                      className="h-7 w-7"
+                      title="Ampliar"
+                      onClick={() => setLightboxIndex(index)}
+                    >
+                      <Maximize2 className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      size="icon"
+                      variant="secondary"
+                      className="h-7 w-7"
                       title="Copiar prompt"
                       onClick={() => void copyPrompt(image)}
                     >
@@ -269,18 +447,44 @@ export function ImageMode() {
                     <Button
                       size="icon"
                       variant="secondary"
+                      className="h-7 w-7 hover:text-destructive"
                       title="Eliminar"
-                      onClick={() => setGallery((current) => current.filter((item) => item.id !== image.id))}
+                      onClick={() => removeImage(image)}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
+
+                  <figcaption className="space-y-1 p-2">
+                    <p className="line-clamp-2 text-[11px] text-muted-foreground">{image.prompt}</p>
+                    <div className="flex items-center justify-between gap-1">
+                      <Badge variant="outline" className="max-w-[9rem] truncate">
+                        {image.model}
+                      </Badge>
+                      <span className="text-[10px] text-muted-foreground">
+                        {formatRelativeTime(image.createdAt)}
+                      </span>
+                    </div>
+                  </figcaption>
                 </figure>
               ))}
             </div>
           )}
         </CardContent>
       </Card>
+
+      {lightboxIndex !== null ? (
+        <ImageLightbox
+          images={gallery}
+          index={lightboxIndex}
+          onIndexChange={setLightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+          onSave={(image) => void saveImage(image)}
+          onDelete={removeImage}
+          onCopyPrompt={(image) => void copyPrompt(image)}
+          copiedPromptId={copied}
+        />
+      ) : null}
     </div>
   );
 }

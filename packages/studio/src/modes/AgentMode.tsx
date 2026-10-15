@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronRight,
   FilePlus2,
+  FolderOpen,
   FolderPlus,
   Paperclip,
   Send,
@@ -25,8 +26,11 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { Alert, Badge, Button, EmptyState, Input, Segmented, Select, Textarea } from '@/components/ui';
+import { Alert, Badge, Button, EmptyState, Segmented, Select, Textarea } from '@/components/ui';
 import { AgentEditor } from '@/components/AgentEditor';
+import { FolderPicker } from '@/components/FolderPicker';
+import { MessageContent } from '@/components/CodeBlock';
+import { useAutoGrow } from '@/lib/hooks';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import { useActiveProvider, useStore } from '@/store';
 import type { AgentSummary, StoredMessage, SubagentBlock, TimelineBlock } from '@/types';
@@ -55,12 +59,12 @@ export function AgentMode() {
   const projects = useStore((state) => state.harnessProjects);
   const activeProjectId = useStore((state) => state.activeProjectId);
   const setActiveProject = useStore((state) => state.setActiveProject);
-  const createProject = useStore((state) => state.createProject);
   const removeProject = useStore((state) => state.removeProject);
   const attachments = useStore((state) => state.attachments);
-  const attachPath = useStore((state) => state.attachPath);
+  const attachFile = useStore((state) => state.attachFile);
   const removeAttachment = useStore((state) => state.removeAttachment);
   const runHarnessTask = useStore((state) => state.runHarnessTask);
+  const pushToast = useStore((state) => state.pushToast);
 
   const selectedModelId = useStore((state) => state.selectedModels.agent);
   const provider = useActiveProvider();
@@ -68,15 +72,17 @@ export function AgentMode() {
   const [agentMode, setAgentMode] = useState<AgentModeName>('build');
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentSummary | null>(null);
-  const [pathDraft, setPathDraft] = useState('');
-  const [projectDraft, setProjectDraft] = useState('');
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [showProjects, setShowProjects] = useState(false);
   const [showAgents, setShowAgents] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages]);
+
+  const textareaRef = useAutoGrow(messageInput);
 
   const connected = harnessEnabled && harnessStatus === 'connected';
   const disabled = !connected || isStreaming || !selectedModelId;
@@ -87,14 +93,25 @@ export function AgentMode() {
     void runHarnessTask(prompt, agentMode);
   }, [messageInput, disabled, runHarnessTask, agentMode]);
 
-  const attach = useCallback(() => {
-    const path = pathDraft.trim();
-    if (!path) return;
-    setPathDraft('');
-    void attachPath(path).catch((error: unknown) => {
-      window.alert(error instanceof Error ? error.message : 'No se pudo adjuntar el archivo');
-    });
-  }, [pathDraft, attachPath]);
+  const onFilesPicked = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files ?? []);
+      event.target.value = '';
+      for (const file of files) {
+        void file
+          .text()
+          .then((content) => attachFile(file.name, content))
+          .catch((error: unknown) => {
+            pushToast({
+              variant: 'destructive',
+              title: 'No se pudo adjuntar el archivo',
+              description: error instanceof Error ? error.message : undefined,
+            });
+          });
+      }
+    },
+    [attachFile, pushToast],
+  );
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -147,25 +164,12 @@ export function AgentMode() {
       {showProjects ? (
         <div className="space-y-2 border-b border-border bg-muted/30 px-3 py-2">
           <div className="flex items-center gap-2">
-            <Input
-              className="h-7 max-w-xs text-xs"
-              placeholder="Nombre del proyecto, p. ej. mi-app"
-              value={projectDraft}
-              onChange={(event) => setProjectDraft(event.target.value)}
-            />
-            <Button
-              size="sm"
-              onClick={() => {
-                const name = projectDraft.trim();
-                if (!name) return;
-                setProjectDraft('');
-                void createProject(name);
-              }}
-            >
-              Crear proyecto
+            <Button size="sm" variant="outline" className="h-7" onClick={() => setFolderPickerOpen(true)}>
+              <FolderOpen className="h-3.5 w-3.5" />
+              Examinar…
             </Button>
             <span className="text-[11px] text-muted-foreground">
-              El proyecto se registra en <code>.kli/projects/</code>.
+              El agente trabaja aislado dentro de esa carpeta.
             </span>
           </div>
 
@@ -202,6 +206,15 @@ export function AgentMode() {
             </ul>
           ) : null}
         </div>
+      ) : null}
+
+      {folderPickerOpen ? (
+        <FolderPicker
+          onClose={() => setFolderPickerOpen(false)}
+          onSelect={() => {
+            setFolderPickerOpen(false);
+          }}
+        />
       ) : null}
 
       {showAgents ? (
@@ -281,7 +294,7 @@ export function AgentMode() {
       </div>
 
       {/* Composer */}
-      <div className="space-y-2 border-t border-border p-3">
+      <div className="space-y-2 border-t border-border px-3 pb-3 pt-2">
         {harnessError ? (
           <Alert variant="destructive" className="text-xs">
             {harnessError}
@@ -294,16 +307,22 @@ export function AgentMode() {
           </Alert>
         ) : null}
 
+        {/* Adjuntos siempre por encima de la barra */}
         {attachments.length > 0 ? (
           <div className="flex flex-wrap gap-2">
             {attachments.map((attachment) => (
               <span
                 key={attachment.id}
-                className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/50 px-2 py-1 text-[11px]"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted/50 py-1 pl-2.5 pr-1 text-[11px]"
               >
                 <Paperclip className="h-3 w-3" />
                 {attachment.name}
-                <button type="button" onClick={() => removeAttachment(attachment.id)} aria-label="Quitar">
+                <button
+                  type="button"
+                  className="rounded-full p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  onClick={() => removeAttachment(attachment.id)}
+                  aria-label="Quitar adjunto"
+                >
                   <X className="h-3 w-3" />
                 </button>
               </span>
@@ -311,55 +330,66 @@ export function AgentMode() {
           </div>
         ) : null}
 
-        <div className="flex items-end gap-2">
-          <div className="flex flex-1 flex-col gap-1">
-            <Textarea
-              rows={2}
-              value={messageInput}
-              onChange={(event) => setMessageInput(event.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder={
-                !connected
-                  ? 'Conecta el harness para empezar'
-                  : !selectedModelId
-                    ? 'Selecciona un modelo en la barra superior'
-                    : 'Describe la tarea…  (Enter envía, Shift+Enter salto de línea)'
-              }
-              disabled={!connected}
-              className="max-h-48 min-h-[2.5rem] resize-none"
-            />
-            <div className="flex items-center gap-2">
-              <Input
-                className="h-7 max-w-xs text-xs"
-                placeholder="Adjuntar archivo del workspace (ruta relativa)"
-                value={pathDraft}
-                onChange={(event) => setPathDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    attach();
-                  }
-                }}
-                disabled={!connected}
-              />
-              <Button size="sm" variant="ghost" onClick={attach} disabled={!connected || !pathDraft.trim()}>
-                <Paperclip className="h-3.5 w-3.5" />
-                Adjuntar
-              </Button>
-            </div>
-          </div>
+        <input ref={fileInputRef} type="file" multiple hidden onChange={onFilesPicked} />
+
+        <div className="flex items-end gap-1.5 rounded-2xl border border-input bg-background px-2 py-1.5 shadow-sm transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 shrink-0 rounded-full"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!connected}
+            title="Adjuntar archivo"
+            aria-label="Adjuntar archivo"
+          >
+            <Paperclip className="h-4 w-4" />
+          </Button>
+
+          <Textarea
+            ref={textareaRef}
+            rows={1}
+            value={messageInput}
+            onChange={(event) => setMessageInput(event.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={
+              !connected
+                ? 'Conecta el harness para empezar'
+                : !selectedModelId
+                  ? 'Selecciona un modelo en la barra superior'
+                  : 'Describe la tarea…'
+            }
+            disabled={!connected}
+            className="max-h-48 min-h-[2rem] flex-1 resize-none border-0 bg-transparent px-1 py-1 shadow-none focus-visible:ring-0"
+          />
+
           {isStreaming ? (
-            <Button variant="destructive" onClick={cancelRequest}>
-              <Square className="h-4 w-4" />
-              Detener
+            <Button
+              size="icon"
+              variant="destructive"
+              className="h-8 w-8 shrink-0 rounded-full"
+              onClick={cancelRequest}
+              title="Detener"
+              aria-label="Detener"
+            >
+              <Square className="h-3.5 w-3.5" />
             </Button>
           ) : (
-            <Button onClick={send} disabled={disabled || !messageInput.trim()}>
+            <Button
+              size="icon"
+              className="h-8 w-8 shrink-0 rounded-full"
+              onClick={send}
+              disabled={disabled || !messageInput.trim()}
+              title="Enviar (Enter)"
+              aria-label="Enviar mensaje"
+            >
               <Send className="h-4 w-4" />
-              Ejecutar
             </Button>
           )}
         </div>
+
+        <p className="px-1 text-[10px] text-muted-foreground">
+          Enter envía · Shift+Enter salto de línea
+        </p>
       </div>
     </div>
   );
@@ -392,7 +422,9 @@ function Bubble({ message }: { message: StoredMessage }) {
           </div>
         ) : null}
 
-        {message.reasoning ? <ThinkingBlock text={message.reasoning} streaming={message.streaming} /> : null}
+        {message.reasoning?.trim() ? (
+          <ThinkingBlock text={message.reasoning} streaming={message.streaming} />
+        ) : null}
 
         {message.blocks?.length ? (
           <div className="space-y-1">
@@ -406,12 +438,9 @@ function Bubble({ message }: { message: StoredMessage }) {
           <Alert variant="destructive" className="text-xs">
             {message.error}
           </Alert>
-        ) : message.content ? (
+        ) : message.content.trim() ? (
           <div className="rounded-xl bg-muted/60 px-3 py-2 text-sm text-foreground">
-            <p className="whitespace-pre-wrap break-words leading-relaxed">
-              {message.content}
-              {message.streaming ? <span className="ml-0.5 animate-pulse">▌</span> : null}
-            </p>
+            <MessageContent content={message.content} streaming={message.streaming} />
           </div>
         ) : message.streaming ? (
           <div className="rounded-xl bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Pensando…</div>

@@ -6,9 +6,11 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Copy, Eraser, Square, Terminal, User } from 'lucide-react';
+import { Copy, Eraser, Send, Square, Terminal, User } from 'lucide-react';
 import { Alert, Button, EmptyState, Textarea } from '@/components/ui';
+import { MessageContent } from '@/components/CodeBlock';
 import { ApiError, streamChat } from '@/lib/api';
+import { useAutoGrow } from '@/lib/hooks';
 import { cn, createId, formatRelativeTime } from '@/lib/utils';
 import { useActiveProvider, useStore } from '@/store';
 import { resolveApiKey, useSecrets } from '@/store/secrets';
@@ -37,7 +39,7 @@ export function ChatMode() {
 
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useAutoGrow(messageInput);
 
   // Follow the stream.
   useEffect(() => {
@@ -171,17 +173,17 @@ export function ChatMode() {
         <div ref={bottomRef} />
       </div>
 
-      <div className="space-y-2 border-t border-border p-3">
+      <div className="space-y-2 border-t border-border px-3 pb-3 pt-2">
         {connectionStatus !== 'connected' && modelsError ? (
           <Alert variant="warning" className="text-xs">
             {modelsError}
           </Alert>
         ) : null}
 
-        <div className="flex items-end gap-2">
+        <div className="flex items-end gap-1.5 rounded-2xl border border-input bg-background px-2 py-1.5 shadow-sm transition-colors focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/40">
           <Textarea
             ref={textareaRef}
-            rows={2}
+            rows={1}
             value={messageInput}
             onChange={(event) => setMessageInput(event.target.value)}
             onKeyDown={onKeyDown}
@@ -190,22 +192,39 @@ export function ChatMode() {
                 ? 'Selecciona un modelo para empezar'
                 : disconnected
                   ? 'Sin conexión con el proveedor — revisa la configuración'
-                  : 'Escribe tu mensaje…  (Enter envía, Shift+Enter salto de línea)'
+                  : 'Escribe tu mensaje…'
             }
             disabled={!selectedModelId}
-            className="max-h-48 min-h-[2.5rem] resize-none"
+            className="max-h-48 min-h-[2rem] flex-1 resize-none border-0 bg-transparent px-1 py-1 shadow-none focus-visible:ring-0"
           />
           {isStreaming ? (
-            <Button variant="destructive" onClick={cancelRequest}>
-              <Square className="h-4 w-4" />
-              Detener
+            <Button
+              size="icon"
+              variant="destructive"
+              className="h-8 w-8 shrink-0 rounded-full"
+              onClick={cancelRequest}
+              title="Detener"
+              aria-label="Detener"
+            >
+              <Square className="h-3.5 w-3.5" />
             </Button>
           ) : (
-            <Button onClick={() => void send()} disabled={disabled || !messageInput.trim()}>
-              Enviar
+            <Button
+              size="icon"
+              className="h-8 w-8 shrink-0 rounded-full"
+              onClick={() => void send()}
+              disabled={disabled || !messageInput.trim()}
+              title="Enviar (Enter)"
+              aria-label="Enviar mensaje"
+            >
+              <Send className="h-4 w-4" />
             </Button>
           )}
         </div>
+
+        <p className="px-1 text-[10px] text-muted-foreground">
+          Enter envía · Shift+Enter salto de línea
+        </p>
       </div>
     </div>
   );
@@ -238,11 +257,10 @@ function Bubble({
           <Alert variant="destructive" className="text-xs">
             {message.error}
           </Alert>
+        ) : isUser ? (
+          <p className="whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
         ) : (
-          <p className="whitespace-pre-wrap break-words leading-relaxed">
-            {message.content}
-            {message.streaming ? <span className="ml-0.5 animate-pulse">▌</span> : null}
-          </p>
+          <MessageContent content={message.content} streaming={message.streaming} />
         )}
         <div
           className={cn(

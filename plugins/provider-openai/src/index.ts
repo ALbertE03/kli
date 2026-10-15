@@ -278,6 +278,11 @@ export class OpenAiProvider implements Provider {
     let finishReason = "stop";
     let usage: OpenAIUsage | undefined;
     const toolAcc = new Map<number, { id: string; name: string; args: string }>();
+    // Reasoning models open their stream with newline-heavy whitespace. Emitting
+    // it verbatim makes UIs render a tall blank area before the real answer, so
+    // leading whitespace-only deltas are dropped until actual text arrives.
+    let sawContent = false;
+    let sawReasoning = false;
 
     for await (const chunk of stream) {
       if (signal.aborted) break;
@@ -287,10 +292,23 @@ export class OpenAiProvider implements Provider {
       const delta = choice.delta;
       // Reasoning models stream their chain of thought in a separate field;
       // surface it so UIs can show a "thinking" block.
-      if (delta?.reasoning_content) onReasoning?.(delta.reasoning_content);
+      if (delta?.reasoning_content) {
+        const text = delta.reasoning_content;
+        if (sawReasoning || text.trim().length > 0) {
+          sawReasoning = true;
+          onReasoning?.(text);
+        }
+      }
       if (delta?.content) {
-        content += delta.content;
-        onToken(delta.content);
+        let text = delta.content;
+        if (!sawContent) {
+          text = text.replace(/^[ \t\r\n]+/, "");
+        }
+        if (text) {
+          sawContent = true;
+          content += text;
+          onToken(text);
+        }
       }
       if (choice.finish_reason) finishReason = choice.finish_reason;
       for (const tc of delta?.tool_calls ?? []) {

@@ -99,6 +99,17 @@ In the sidebar, **Harness → Conectar** points the Studio at the server
 backends and subagents were loaded. Without it, the four provider modes still
 work as a plain multi-provider client.
 
+The shell is a three-pane workspace: a collapsible sidebar (provider, harness
+and session cards), the mode area in the middle, and a resizable workbench panel
+on the right (**Editor · Diff · Terminal · Preview · Logs · Modelo**). Press
+**⌘/Ctrl + K** for the command palette, **⌘/Ctrl + B** to collapse the sidebar,
+**⌘/Ctrl + J** to toggle the workbench panel, and **⌘/Ctrl + ←/→** to change
+mode. Only the Editor and Logs panels have real data today (workspace files via
+`/api/read` and the run timeline); Diff, Terminal and Preview explain what the
+server does not expose yet instead of showing mock data. See
+[`packages/studio/CHANGES.md`](./packages/studio/CHANGES.md) for the full
+changes log.
+
 | Env var | Purpose |
 |---------|---------|
 | `VITE_FREELLMAPI_BASE_URL` | Override the FreeLLMAPI endpoint |

@@ -342,11 +342,25 @@ export async function streamChat(request: ChatRequest): Promise<void> {
   if (!response.ok) throw await readError(response, 'Error al iniciar el stream');
 
   let usage: Usage | null = null;
+  // Reasoning models open the stream with newline-heavy whitespace; emitting it
+  // verbatim makes the reply start with a blank area, so leading whitespace is
+  // dropped until the first real text delta arrives.
+  let sawText = false;
+  const emit = (text: string): void => {
+    if (!sawText) {
+      const trimmed = text.replace(/^[ \t\r\n]+/, '');
+      if (trimmed.length === 0) return;
+      sawText = true;
+      onDelta(trimmed);
+      return;
+    }
+    onDelta(text);
+  };
   for await (const event of readSseEvents(response)) {
     if (event.event === 'ping' || event.event === 'content_block_start') continue;
     if (event.data === '[DONE]') break;
     if (isAnthropic) {
-      usage = handleAnthropicEvent(event, onDelta) ?? usage;
+      usage = handleAnthropicEvent(event, emit) ?? usage;
       continue;
     }
     let parsed: unknown;
@@ -355,7 +369,7 @@ export async function streamChat(request: ChatRequest): Promise<void> {
     } catch {
       continue;
     }
-    usage = handleOpenAiChunk(parsed, onDelta) ?? usage;
+    usage = handleOpenAiChunk(parsed, emit) ?? usage;
   }
   if (usage && onUsage) onUsage(usage);
 }
@@ -389,36 +403,92 @@ export interface ImageResult {
   url: string;
 }
 
+export interface GenerateImageOptions {
+  size: string;
+  /** How many images the caller wants. */
+  count: number;
+  /** Optional numeric seed, forwarded to backends that accept it. */
+  seed?: number;
+  signal?: AbortSignal;
+  /**
+   * Called after every response with the images it added and the running
+   * total, so the UI can show results while the rest are still generating.
+   */
+  onBatch?: (images: ImageResult[], received: number, total: number) => void;
+}
+
+/**
+ * Ask for `count` images, batch by batch.
+ *
+ * Most OpenAI-compatible backends ignore `n` and always answer with a single
+ * image — FreeLLMAPI → Cloudflare does exactly that — so instead of trusting
+ * the parameter we re-ask for whatever is missing until the count is reached
+ * (or the attempts run out). Providers that *do* honour `n` finish in one
+ * round trip because the loop exits as soon as `collected` is complete.
+ */
 export async function generateImage(
   provider: ProviderConfig,
   apiKey: string,
   model: string,
   prompt: string,
-  options: { size: string; count: number; signal?: AbortSignal },
+  options: GenerateImageOptions,
 ): Promise<ImageResult[]> {
-  const body = await requestJson<unknown>(
-    provider,
-    apiKey,
-    '/images/generations',
-    {
-      method: 'POST',
-      body: JSON.stringify({ model, prompt, n: options.count, size: options.size }),
-      signal: options.signal,
-    },
-    'Error al generar la imagen',
-  );
-  return extractImages(body);
+  const total = Math.max(1, options.count);
+  const collected: ImageResult[] = [];
+  let seedAllowed = options.seed !== undefined;
+
+  const send = (payload: Record<string, unknown>) =>
+    requestJson<unknown>(
+      provider,
+      apiKey,
+      '/images/generations',
+      { method: 'POST', body: JSON.stringify(payload), signal: options.signal },
+      'Error al generar la imagen',
+    );
+
+  for (let attempt = 1; attempt <= total && collected.length < total; attempt += 1) {
+    const wanted = total - collected.length;
+    const payload: Record<string, unknown> = { model, prompt, n: wanted, size: options.size };
+    if (options.seed !== undefined && seedAllowed) payload.seed = options.seed;
+
+    let response: unknown;
+    try {
+      response = await send(payload);
+    } catch (cause) {
+      // Some backends reject unknown parameters (OpenAI has no `seed`):
+      // drop it once and retry instead of failing the whole generation.
+      if (options.seed !== undefined && seedAllowed && cause instanceof ApiError && cause.status === 400) {
+        seedAllowed = false;
+        delete payload.seed;
+        response = await send(payload);
+      } else {
+        throw cause;
+      }
+    }
+
+    const batch = extractImages(response).slice(0, wanted);
+    if (batch.length === 0) break;
+    collected.push(...batch);
+    options.onBatch?.(batch, Math.min(collected.length, total), total);
+  }
+
+  if (collected.length === 0) throw new ApiError('La respuesta no incluye ninguna imagen', 200, 'bad_response');
+  return collected;
 }
 
 function extractImages(body: unknown): ImageResult[] {
   const record = asRecord(body);
+  // Cloudflare-style envelopes nest the payload under `result`/`output`.
+  const nested = asRecord(record?.result) ?? asRecord(record?.output);
   const items = Array.isArray(record?.data)
     ? record.data
     : Array.isArray(record?.images)
       ? record.images
-      : Array.isArray(body)
-        ? body
-        : null;
+      : Array.isArray(nested?.images)
+        ? nested.images
+        : Array.isArray(body)
+          ? body
+          : null;
   const fromData = items?.map((item) => {
     const entry = asRecord(item);
     const b64 = asString(entry?.b64_json) ?? asString(entry?.base64) ?? asString(entry?.image);
@@ -427,6 +497,12 @@ function extractImages(body: unknown): ImageResult[] {
   });
   const results = (fromData ?? []).filter((url): url is string => Boolean(url));
 
+  if (results.length === 0 && nested) {
+    const single = asString(nested.b64_json) ?? asString(nested.image) ?? asString(nested.base64);
+    if (single) results.push(`data:image/png;base64,${single}`);
+    const nestedUrl = asString(nested.url);
+    if (nestedUrl) results.push(nestedUrl);
+  }
   if (results.length === 0) {
     const legacy = asString(record?.bases64);
     if (legacy) results.push(`data:image/png;base64,${legacy}`);

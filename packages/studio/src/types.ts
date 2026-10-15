@@ -182,3 +182,34 @@ export interface HarnessToolInfo {
   mode: string;
   capabilities: string[];
 }
+
+/* ── UI shell ───────────────────────────────────────────────────────────── */
+
+/** Tabs of the right-hand panel. */
+export type RightPanelTab = 'editor' | 'diff' | 'terminal' | 'preview' | 'logs' | 'model';
+
+export const RIGHT_PANEL_TABS: readonly RightPanelTab[] = [
+  'editor',
+  'diff',
+  'terminal',
+  'preview',
+  'logs',
+  'model',
+];
+
+export const RIGHT_PANEL_LABELS: Record<RightPanelTab, string> = {
+  editor: 'Editor',
+  diff: 'Diff',
+  terminal: 'Terminal',
+  preview: 'Preview',
+  logs: 'Logs',
+  model: 'Modelo',
+};
+
+/** Transient, non-persisted notification rendered above every other layer. */
+export interface Toast {
+  id: string;
+  title: string;
+  description?: string;
+  variant: 'info' | 'success' | 'warning' | 'destructive';
+}
