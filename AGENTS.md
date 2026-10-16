@@ -2,6 +2,10 @@
 
 KLI is a **plugin-first agentic coding harness**: thin kernel + plugins per capability. **TypeScript 5, ESM-only, pnpm workspace, Node ≥20, pnpm ≥10**.
 
+Other sources worth reading (they can lag behind the code — trust config/scripts over prose):
+`CONTRIBUTING.md` (plugin authoring + release checklist), `SPEC.md` (design spec),
+`README.md` (setup/run), `TESTING.md`, `docs/connect-local-provider.md`.
+
 ---
 
 ## Structure
@@ -10,17 +14,20 @@ KLI is a **plugin-first agentic coding harness**: thin kernel + plugins per capa
 packages/
   api/      @kli/api     # Frozen Zod contracts (Rule #1: plugins import ONLY from here)
   kernel/   @kli/kernel  # Loop, registry, bus, loader, prompt/graph builders
-  cli/      @kli/cli     # `kli` binary (entry: dist/cli.js)
-  server/   @kli/server  # HTTP + SSE bridge for KLI Studio
-  studio/   @kli/studio  # Web UI (Vite + React), talks to @kli/server
+  server/   @kli/server  # HTTP + SSE bridge for KLI Studio (entry: dist/serve.js)
+  studio/   @kli/studio  # Web UI (Vite + React); talks ONLY to @kli/server
+  runtime-subprocess/    # @kli/runtime-subprocess — subprocess runtime
 
 plugins/
-  tool-*       # read-file, edit-file, execute-bash, web-search, deep-search
+  tool-*       # read-file, edit-file, create-file, execute-bash, web-search, deep-search
   backend-*    # AST extractors: ts-morph, python-ast, tree-sitter (WIP), config
   context-*    # Graph tools, MCP bridge, skills, system prompt sections
   mode-*       # plan, build, ask (installed via registerMode)
   provider-*   # openai, anthropic
 ```
+
+There is **no CLI**. The harness is driven by the Studio UI through `@kli/server`.
+Some comments/docs still say `kli serve` or `@kli/cli` — that CLI was removed; `dist/serve.js` replaced it.
 
 ---
 
@@ -35,43 +42,59 @@ pnpm exec eslint .                    # Lint (flat config at repo root)
 pnpm clean                            # Remove dist/ + tsbuildinfo/ everywhere
 ```
 
-**Verification order**: `build → typecheck → eslint`. **No test suite or CI config in repo.**
+**Verification order**: `build → typecheck → eslint` (exactly what `.github/workflows/ci.yml` runs on PRs). There is **no unit-test runner**; `.scripts/smoke.sh` is **stale** (it still shells out to the removed `@kli/cli`, so it fails).
 
 ### Single-Package Build
 ```bash
-pnpm --filter @kli/<package> build    # e.g., @kli/kernel, @kli/api, @kli/cli
+pnpm --filter @kli/<package> build    # e.g., @kli/kernel, @kli/api, @kli/server, @kli/studio
 ```
 
-**Critical**: Rebuild before running. The CLI/loader import `dist/`, **never `src/`** — nothing hot-reloads.
+**Critical**: Rebuild before running. The server and plugin loader import `dist/`, **never `src/`** — nothing hot-reloads.
+
+### Run
+```bash
+pnpm --filter @kli/server start        # harness server on 127.0.0.1:4317
+# or: node packages/server/dist/serve.js [--port <n>] [--host <h>] [--workspace <dir>]
+pnpm --filter @kli/studio dev          # Studio UI on http://localhost:5173
+./start.sh                             # both at once
+```
 
 ---
 
-## CLI
+## Harness Server (`@kli/server`)
 
-### Commands
-```bash
-kli run [--mode plan|build|ask] [--project <name>] [--debug] [--quiet] "<task>"
-kli repl [--mode plan|build|ask] [--project <name>]
-kli prompt [--mode plan|build|ask] [--task "<task>"]  # Print assembled system prompt
-kli tools [--mode plan|build|ask]                       # List visible tools + JSON Schemas
-kli graph build | kli graph status                      # Build/show cached code graph
-kli session list | kli session resume <id>
-kli project create <name> | kli project list
-kli agent list | kli agent show <id> | kli agent add <id> [flags] | kli agent rm <id>
-kli serve [--port <n>] [--host <h>]                     # Harness server for KLI Studio
-kli plugin list | kli model list | kli help
-```
+The entrypoint is `packages/server/src/serve.ts` → `dist/serve.js`. It boots a
+`KliServer` from `src/index.ts`; there is **no CLI**. All endpoints live in
+`KliServer.handle`:
 
-### Behavior
-- `kli run` streams tokens to **stdout**; live tool/model activity and tokens/s go to **stderr**.
-- `--quiet` silences the live log; `--debug` prints the system prompt.
+- `GET /api/health` — plugins, tools per mode, backends, skills, agents.
+- `POST /api/chat` — SSE run; body `{ message, mode, provider, projectPath?, projectId? }`.
+  `provider` is only an identity hint (`id`/`kind`/`baseUrl`/`model`); the API key
+  is resolved server-side by `resolveProvider()` from env.
+- `POST /api/provider/passthrough` — gateway for non-agent provider calls
+  (chat, embeddings, images, audio, `/models`). Forwards to the resolved provider
+  with the server env key; paths are whitelisted (`ALLOWED_PROVIDER_PATHS`).
+- `GET /api/workspace`, `GET /api/tools`, `GET /api/models`.
+- `GET|POST|DELETE /api/projects`, `GET|POST|DELETE /api/agents`.
+- `POST /api/read`, `GET /api/fs/dirs` (folder picker), `GET|POST /api/graph`, `POST /api/reload`.
+
+`serve.ts` loads the nearest `.env` walking up from the process cwd
+(dependency-free, shell exports win) before booting — so `pnpm --filter
+@kli/server start` still finds the repo-root `.env`. The server — not the
+browser — holds `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `ANTHROPIC_API_KEY`.
+
+`projectPath` isolates a run inside a project folder (its own `Kernel`, `cwd`
+and `workspaceRoot`); `projectId` is the stable project identifier threaded
+through to `PluginContext`/`PromptContext`.
 
 ---
 
 ## Configuration
 
 ### Environment (`.env`)
-All model/runtime config is **environment-only** (providers hardcode nothing).
+All model/runtime config is **environment-only** (providers hardcode nothing) and
+lives in the repo-root `.env`, which **only `@kli/server` reads**. The Studio
+needs no `VITE_*` vars: it forwards provider calls and the server injects the key.
 
 | Variable | Notes |
 |----------|-------|
@@ -81,20 +104,19 @@ All model/runtime config is **environment-only** (providers hardcode nothing).
 | `KLI_STREAM` | `0` disables streaming |
 | `KLI_TOP_P`, `KLI_PRESENCE_PENALTY`, `KLI_FREQUENCY_PENALTY`, `KLI_SEED`, `KLI_STOP`, `KLI_REASONING_EFFORT` | Optional sampling |
 | `KLI_COST_LIMIT`, `KLI_TIMEOUT`, `KLI_MAX_RETRIES` | Budget/deadline/retry limits |
-| `OPENAI_API_KEY`, `OPENAI_BASE_URL` | OpenAI-compatible provider |
+| `OPENAI_BASE_URL` / `OPENAI_API_KEY` | OpenAI-compatible provider (FreeLLMAPI by default) |
 | `ANTHROPIC_API_KEY` | Anthropic provider |
-| `TAVILY_KEY` | Required by `web_search`; `fetch_url` needs no key |
+| `TAVILY_KEY`, `JIRO_KEY` | `web_search` / `deep-search`; `fetch_url` needs no key |
 
 ---
 
 ## Plugin System
 
-### How the CLI Locates Plugins
-- Workspace root = **`process.cwd()`** (not CLI install dir).
-- Reads `<cwd>/.kli/config.js` (or `.ts`), auto-loads `<cwd>/.env` (dotenv).
-- Plugin paths in config are **resolved relative to `cwd`**.
-- `.kli/config.js` `plugins.include` must list **explicit `./plugins/<name>/dist/index.js` entries** (not directories).
-- **Config must NOT use `require()`** (loader warns and returns `{}`).
+### How Plugins Are Located
+- `@kli/server`'s `Workspace` reads `<workspaceRoot>/.kli/config.js` (or `.ts`).
+- `plugins.include` must list **explicit `./plugins/<name>/dist/index.js` paths** (not directories); relative entries resolve against the **host** workspace root, never a project folder.
+- **`config.js` must NOT call `require()`** — the loader detects it and returns `{}` (so nothing loads).
+- `.env` is loaded by `serve.ts`, **not** by the plugin loader; providers/tools read `process.env`.
 
 ### Adding a Plugin
 1. Create the plugin package.
@@ -109,6 +131,7 @@ All model/runtime config is **environment-only** (providers hardcode nothing).
 - **Rule #4**: `TaskRegistry` is a **read-only snapshot**; do not mutate mid-run.
 - **Rule #5**: Plugins communicate **only** via the event bus (never direct calls).
 - **Rule #6**: **False edges are worse than missing edges** — never fabricate graph edges.
+- **Rule #7**: The kernel hard-codes **no** tool, mode, provider or agent name; hosts supply the surface (see `packages/kernel/src/identity.ts`).
 
 ---
 
@@ -117,10 +140,10 @@ All model/runtime config is **environment-only** (providers hardcode nothing).
 - Defined in `@kli/api` (`AgentDefinitionSchema`): `id`, `name`, `description`, `mode`, `model`, `tools`, `instructions`, `hidden`, `builtin`.
 - Built-ins: `explorer`, `researcher`, `coder`, `reviewer`, `orchestrator` (hidden).
 - Overrides live in `<workspaceRoot>/.kli/agents.json` (layered over defaults via `mergeAgents()`).
-- `kli agent add|rm` and Studio UI write to `agents.json`.
+- The Studio UI writes overrides to `agents.json` (via `POST/DELETE /api/agents`).
 - Delegation:
   - `createDelegationTool(name, deps, options)` builds the tool to spawn subagents.
-  - **Tool name is caller’s choice** (`"task"` in CLI/server); kernel hard-codes **no** tool name (Rule #7).
+  - **Tool name is caller’s choice** (`"task"` in the server); the kernel hard-codes **no** tool name (Rule #7).
   - `Kernel.runAgent()` scopes a registry snapshot to the agent (mode filter ∩ `agent.tools` + `agentPromptFragment`).
   - Delegation tool is **per-run** (closes over live `Provider`), `priority: 100`, `exclusive: true`.
   - Modes must include delegation tool name (e.g., `"task"`) in `allowTools` or parent **cannot** delegate.
@@ -130,15 +153,15 @@ All model/runtime config is **environment-only** (providers hardcode nothing).
 
 ## KLI Studio (`packages/studio`)
 
-- **5 modes**: `agent` (uses harness), `chat`, `image`, `embeddings`, `audio` (talk directly to provider).
+- **5 modes**: `agent` (full harness via `@kli/server`), `chat`, `image`, `embeddings`, `audio`.
+- **Provider routing**: **no mode calls a provider directly.** `lib/api.ts` funnels every call (chat, images, embeddings, audio, `/models`) through `POST /api/provider/passthrough`; `@kli/server` resolves base URL + API key from env and forwards upstream. The `provider` field in requests is only an identity hint. The server URL comes from `src/lib/gateway.ts`, kept in sync with `harnessUrl`.
 - **Agent mode**:
   - Client: `src/lib/harness.ts` (for `@kli/server`).
   - Gated on `GET /api/health` (returns plugins, tools per mode, backends, skills).
   - Server streams SSE events: `start`, `reasoning`, `token`, `tool.start`, `tool.end`, `agent.start`, `agent.tool`, `agent.end`, `done`, `error`.
   - Reasoning deltas come from `reasoning_content` in OpenAI provider (shown as "Razonamiento" in UI).
-- **Provider switching**: `@kli/server` rebuilds a `Provider` **per request** from UI’s `{ baseUrl, apiKey, model }`.
 - **Build**: `pnpm --filter @kli/studio build` (runs `vite build` + `typecheck`).
-- **State**: Persists to `localStorage` (`kli-studio-storage`, zustand `version: 2`); API keys in `sessionStorage` (`kli-studio-secrets`).
+- **State**: Persists to `localStorage` (`kli-studio-storage`, zustand `version: 2`); Settings-typed API keys in `sessionStorage` (`kli-studio-secrets`) are only a fallback (server env wins).
 - **TypeScript**: Stricter `tsconfig.json` (`noEmit`, `moduleResolution: "bundler"`, `jsx: react-jsx`, `noUnusedLocals/Parameters`).
 - **Tailwind**: Tokens in `src/index.css` are **space-separated RGB triplets** (e.g., `--border: 226 226 232`). **Never** use hex/hsl or opacity modifiers (e.g., `bg-primary/10` breaks).
 

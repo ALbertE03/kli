@@ -60,6 +60,7 @@ export function AgentMode() {
   const activeProjectId = useStore((state) => state.activeProjectId);
   const setActiveProject = useStore((state) => state.setActiveProject);
   const removeProject = useStore((state) => state.removeProject);
+  const createProject = useStore((state) => state.createProject);
   const attachments = useStore((state) => state.attachments);
   const attachFile = useStore((state) => state.attachFile);
   const removeAttachment = useStore((state) => state.removeAttachment);
@@ -211,8 +212,25 @@ export function AgentMode() {
       {folderPickerOpen ? (
         <FolderPicker
           onClose={() => setFolderPickerOpen(false)}
-          onSelect={() => {
-            setFolderPickerOpen(false);
+          onSelect={(path) => {
+            const clean = path.replace(/\/+$/, '');
+            const name = clean.split('/').pop() ?? 'proyecto';
+            void createProject(name, path)
+              .then(() => {
+                setFolderPickerOpen(false);
+                pushToast({
+                  variant: 'info',
+                  title: 'Proyecto creado',
+                  description: name,
+                });
+              })
+              .catch((error) => {
+                pushToast({
+                  variant: 'destructive',
+                  title: 'No se pudo crear el proyecto',
+                  description: error instanceof Error ? error.message : 'Error desconocido',
+                });
+              });
           }}
         />
       ) : null}
@@ -271,7 +289,7 @@ export function AgentMode() {
           <EmptyState
             icon={<Terminal className="h-8 w-8" />}
             title="Conecta el harness para usar las herramientas"
-            hint="Ejecuta `kli serve` y pulsa Conectar. Entonces el modelo recibe todos los plugins del workspace: herramientas, grafo de código y subagentes."
+            hint="Ejecuta `pnpm --filter @kli/server start` y pulsa Conectar. Entonces el modelo recibe todos los plugins del workspace: herramientas, grafo de código y subagentes."
             action={
               <Button onClick={() => void connectHarness()}>
                 <Terminal className="h-4 w-4" />

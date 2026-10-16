@@ -67,7 +67,7 @@ export function FileViewer() {
       <EmptyState
         icon={<FolderOpen className="h-8 w-8" />}
         title="Editor sin conexión"
-        hint="Conecta el harness (`kli serve`) para abrir archivos del workspace."
+        hint="Conecta el harness (`pnpm --filter @kli/server start`) para abrir archivos del workspace."
       />
     );
   }

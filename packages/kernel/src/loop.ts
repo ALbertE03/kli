@@ -43,6 +43,7 @@ export interface LoopOptions {
   workspaceRoot: string;
   cwd: string;
   graph?: { summary?: GraphSummary };
+  projectId?: string;
   /** Capabilities available to this task (granted by the caller). */
   capabilities: ReadonlySet<Capability>;
   secrets?: Readonly<Record<string, string>>;
@@ -596,6 +597,7 @@ export class Loop {
       graphSummary: this.opts.graph?.summary,
       env: Object.freeze(sanitizeEnv()),
       userMessage,
+      projectId: this.opts.projectId,
     };
   }
 
@@ -603,6 +605,7 @@ export class Loop {
     return {
       cwd: this.opts.cwd,
       workspaceRoot: this.opts.workspaceRoot,
+      projectId: this.opts.projectId,
       budget: state.budget,
       capabilities: this.opts.capabilities,
       logger: {

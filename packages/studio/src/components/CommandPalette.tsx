@@ -99,7 +99,7 @@ export function CommandPalette({ onOpenSettings }: { onOpenSettings: () => void 
         : {
             id: 'harness:connect',
             group: 'Harness',
-            label: 'Conectar al harness (kli serve)',
+            label: 'Conectar al harness (servidor KLI)',
             icon: Plug,
             run: () => void connectHarness(),
           },

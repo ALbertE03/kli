@@ -14,6 +14,7 @@ import {
   upsertToolBlock,
 } from '@/lib/harness';
 import { DEFAULT_PROVIDER_ID, createDefaultProviders, findProvider } from '@/lib/providers';
+import { setGatewayBaseUrl } from '@/lib/gateway';
 import { DEFAULT_IMAGE_MODEL, defaultModelForMode } from '@/lib/models';
 import { resolveApiKey, useSecrets } from '@/store/secrets';
 import {
@@ -383,10 +384,14 @@ export const useStore = create<StudioState>()(
       },
       dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((item) => item.id !== id) })),
 
-      /* ── Harness ───────────────────────────────────────────────────── */
+      /* ── Harness (KLI server) ───────────────────────────────────────── */
       harnessUrl: 'http://127.0.0.1:4317',
-      setHarnessUrl: (harnessUrl) =>
-        set({ harnessUrl, harnessStatus: 'idle', harnessInfo: null, harnessError: null }),
+      setHarnessUrl: (harnessUrl) => {
+        // Every provider call is proxied through this server, so keep the API
+        // gateway pointed at it too.
+        setGatewayBaseUrl(harnessUrl);
+        set({ harnessUrl, harnessStatus: 'idle', harnessInfo: null, harnessError: null });
+      },
       harnessEnabled: false,
       setHarnessEnabled: (harnessEnabled) => set({ harnessEnabled }),
       harnessStatus: 'idle',
@@ -568,6 +573,7 @@ export const useStore = create<StudioState>()(
         }));
 
         const projectPath = state.harnessProjects.find((project) => project.id === state.activeProjectId)?.path;
+        const projectId = state.activeProjectId;
 
         try {
           await streamHarnessChat({
@@ -579,6 +585,7 @@ export const useStore = create<StudioState>()(
             model,
             attachments,
             ...(projectPath ? { projectPath } : {}),
+            ...(projectId ? { projectId } : {}),
             signal: controller.signal,
             onToken: (delta) => get().appendToMessage(assistantId, delta),
             onReasoning: (delta) =>
@@ -738,6 +745,10 @@ export const useStore = create<StudioState>()(
 );
 
 /* ── Derived selectors ─────────────────────────────────────────────────── */
+
+// The provider gateway must follow the persisted harness URL from the very
+// first render (provider calls are proxied through the server, not made here).
+setGatewayBaseUrl(useStore.getState().harnessUrl);
 
 const FALLBACK_PROVIDER: ProviderConfig = {
   id: 'freellmapi',

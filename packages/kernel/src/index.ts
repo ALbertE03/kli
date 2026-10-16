@@ -207,6 +207,7 @@ class Kernel {
       config: opts.config,
       signal: opts.signal,
       graph: opts.graph ?? undefined,
+      projectId: opts.projectId,
         onToken: opts.onToken,
         ...(opts.onReasoning ? { onReasoning: opts.onReasoning } : {}),
         ...(opts.onToolActivity ? { onToolActivity: opts.onToolActivity } : {}),

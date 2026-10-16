@@ -27,6 +27,7 @@ export interface Logger {
 export interface PluginContext {
   readonly cwd: string;
   readonly workspaceRoot: string;
+  readonly projectId?: string;
   readonly budget: Budget;
   readonly capabilities: ReadonlySet<Capability>;
   readonly logger: Logger;

@@ -5,17 +5,23 @@
   "private": true,
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "kli-serve": "dist/serve.js"
+  },
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./serve": "./dist/serve.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/serve.js",
     "clean": "rm -rf dist"
   },
   "dependencies": {
     "@kli/api": "workspace:*",
     "@kli/kernel": "workspace:*",
+    "@kli/provider-anthropic": "workspace:*",
     "@kli/provider-openai": "workspace:*"
   },
   "devDependencies": {

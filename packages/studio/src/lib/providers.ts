@@ -1,5 +1,4 @@
 import type { ProviderConfig } from '@/types';
-import { normalizeBaseUrl } from '@/lib/utils';
 
 /**
  * Built-in providers. FreeLLMAPI is the default because KLI ships with it
@@ -62,36 +61,6 @@ export function createDefaultProviders(): ProviderConfig[] {
 export function findProvider(providers: ProviderConfig[], id: string | null): ProviderConfig | undefined {
   if (!id) return undefined;
   return providers.find((provider) => provider.id === id);
-}
-
-interface ImportMetaEnvLike {
-  VITE_FREELLMAPI_BASE_URL?: string;
-  VITE_FREELLMAPI_KEY?: string;
-  VITE_OPENAI_KEY?: string;
-  VITE_ANTHROPIC_KEY?: string;
-}
-
-const env = import.meta.env as unknown as ImportMetaEnvLike;
-
-/**
- * Seed API keys from build-time env (`VITE_*`). Users can always override them
- * at runtime from the Settings dialog; secrets live in sessionStorage only.
- */
-export function envApiKey(providerId: string): string {
-  switch (providerId) {
-    case 'freellmapi':
-      return env.VITE_FREELLMAPI_KEY ?? '';
-    case 'openai':
-      return env.VITE_OPENAI_KEY ?? '';
-    case 'anthropic':
-      return env.VITE_ANTHROPIC_KEY ?? '';
-    default:
-      return '';
-  }
-}
-
-export function envBaseUrlOverride(): string | null {
-  return env.VITE_FREELLMAPI_BASE_URL ? normalizeBaseUrl(env.VITE_FREELLMAPI_BASE_URL) : null;
 }
 
 /** Slugify a label into a unique provider id. */

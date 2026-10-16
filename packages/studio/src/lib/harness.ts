@@ -1,5 +1,5 @@
 /**
- * Client for the KLI harness server (`kli serve`).
+ * Client for the KLI harness server (`@kli/server`).
  *
  * When a workspace is connected, KLI Studio stops talking to providers directly
  * and talks to this server instead. The server runs the *real* kernel with every
@@ -45,7 +45,7 @@ async function request<T>(
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiError(
-      `No se pudo contactar el servidor del harness (${baseUrl}). ¿Está corriendo \`kli serve\`?`,
+      `No se pudo contactar el servidor del harness (${baseUrl}). ¿Está corriendo el servidor KLI?`,
       0,
       'offline',
     );
@@ -152,7 +152,7 @@ export interface DirListing {
 }
 
 /**
- * Lists the sub-folders of a directory on the machine running `kli serve`.
+ * Lists the sub-folders of a directory on the machine running the KLI server.
  * Without a path it starts at the user's home folder.
  */
 export function listFolders(
@@ -177,6 +177,8 @@ export interface HarnessChatRequest {
   maxTokens?: number;
   attachments?: Attachment[];
   projectPath?: string;
+  /** ID of the active project (sent to the server for context injection). */
+  projectId?: string;
   signal: AbortSignal;
   onStart?: (info: { runId: string; agents: string[]; tools: number }) => void;
   onToken?: (delta: string) => void;
@@ -212,13 +214,17 @@ export async function streamHarnessChat(request: HarnessChatRequest): Promise<vo
     message: buildMessageWithAttachments(request.message, request.attachments ?? []),
     mode: request.mode,
     provider: {
+      id: request.provider.id,
+      kind: request.provider.kind,
       baseUrl: request.provider.baseUrl,
-      apiKey: request.apiKey,
+      // Optional fallback; the server resolves the real key from its env.
+      ...(request.apiKey ? { apiKey: request.apiKey } : {}),
       model: request.model,
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
       ...(request.maxTokens === undefined ? {} : { maxTokens: request.maxTokens }),
     },
     ...(request.projectPath ? { projectPath: request.projectPath } : {}),
+    ...(request.projectId ? { projectId: request.projectId } : {}),
   };
 
   let response: Response;

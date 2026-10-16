@@ -16,9 +16,12 @@ pnpm install
 # Typecheck & build everything
 pnpm build
 
-# Run a task (you need a provider configured)
-./packages/cli/dist/cli.js run "Add a fibonacci function to src/math.ts"
+# Start the harness server + the Studio UI
+./start.sh
 ```
+
+`start.sh` boots the harness server (`@kli/server`) on port 4317 and the Studio
+dev server on `http://localhost:5173`.
 
 ## Architecture
 
@@ -27,7 +30,6 @@ kli/
   packages/
     api/          @kli/api          frozen contracts (PluginManifest, ToolDefinition, …)
     kernel/       @kli/kernel       loop, registry, bus, loader, prompt builder
-    cli/          @kli/cli          `kli` binary
     server/       @kli/server       HTTP + SSE bridge that exposes the harness
     studio/       @kli/studio       KLI Studio — web UI (Vite + React)
   plugins/
@@ -51,7 +53,6 @@ kli/
 |---------|--------|-------------|
 | `@kli/api` | ✅ | Frozen public contracts (Zod schemas) |
 | `@kli/kernel` | ✅ | Loop, Registry, EventBus, PluginLoader, PromptBuilder |
-| `@kli/cli` | ✅ | `kli` binary |
 | `@kli/server` | ✅ | HTTP + SSE bridge for KLI Studio (boots the Kernel with every plugin) |
 | `@kli/tool-read-file` | ✅ | Example tool plugin |
 | `@kli/tool-create-file` | ✅ | Create files |
@@ -79,25 +80,28 @@ chat, image, embeddings and audio. **FreeLLMAPI is the default provider**
 runtime — the catalogue is fetched from `GET /models` and filtered by modality.
 
 The **Agente** mode does not call the provider directly: it talks to
-`@kli/server` (`kli serve`), which boots the Kernel with every plugin from
-`.kli/config.js`. That is what turns on the reasoning stream ("Razonamiento"),
-the tool timeline, the code graph and the subagents.
+`@kli/server`, which boots the Kernel with every plugin from `.kli/config.js`.
+That is what turns on the reasoning stream ("Razonamiento"), the tool timeline,
+the code graph and the subagents.
 
 ```bash
-# Terminal 1 — the harness
-kli serve --port 4317
+# Terminal 1 — the harness server
+pnpm --filter @kli/server start          # http://127.0.0.1:4317
+# or: node packages/server/dist/serve.js --port 4317 --host 127.0.0.1
 
 # Terminal 2 — the UI
 cd packages/studio
-cp .env.example .env.local   # fill in VITE_FREELLMAPI_KEY
 pnpm dev                     # http://localhost:5173
 pnpm build                   # typecheck + bundle into dist/
 ```
 
 In the sidebar, **Harness → Conectar** points the Studio at the server
 (`http://127.0.0.1:4317` by default) and shows how many plugins, tools,
-backends and subagents were loaded. Without it, the four provider modes still
-work as a plain multi-provider client.
+backends and subagents were loaded. The Studio never talks to a provider
+directly: every call (agent, chat, image, embeddings, audio and the model
+catalogue) is forwarded through the server, which holds the credentials from
+the repo-root `.env`. If the server is not running, the provider modes show
+*Sin conexión* instead of calling out themselves.
 
 The shell is a three-pane workspace: a collapsible sidebar (provider, harness
 and session cards), the mode area in the middle, and a resizable workbench panel
@@ -112,13 +116,13 @@ changes log.
 
 | Env var | Purpose |
 |---------|---------|
-| `VITE_FREELLMAPI_BASE_URL` | Override the FreeLLMAPI endpoint |
-| `VITE_FREELLMAPI_KEY` | Key used until you type one in Settings |
-| `VITE_OPENAI_KEY`, `VITE_ANTHROPIC_KEY` | Same, for the other built-in providers |
+| — | The Studio needs **no** env vars: provider credentials live in the **server's** `.env` |
 
-API keys typed into **Settings** live in `sessionStorage` only. Providers,
-selected models, the harness URL and the theme are persisted in `localStorage`
-under `kli-studio-storage`.
+API keys typed into **Settings** are kept in `sessionStorage` and are only a
+fallback for providers the server has no credentials for; the server's
+`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` always win. Providers, selected models,
+the harness URL and the theme are persisted in `localStorage` under
+`kli-studio-storage`.
 
 ## Subagents
 
@@ -126,49 +130,47 @@ Subagents are configuration, not code. The kernel ships five built-ins
 (`explorer`, `researcher`, `coder`, `reviewer`, `orchestrator`); overrides live
 in `.kli/agents.json`. The parent model delegates to them by calling the
 `task` tool, and `Kernel.runAgent()` runs the nested loop scoped to the
-agent's mode, model and tool allow-list.
+agent's mode, model and tool allow-list. Manage them in the Studio's
+**Subagentes** panel, which writes to `.kli/agents.json` through the harness
+server.
+
+## Harness server
+
+The Studio talks to the harness server over HTTP + SSE. Start it with:
 
 ```bash
-kli agent list
-kli agent show reviewer
-kli agent add security-auditor --name "Auditor" --description "Revisa el diff por inyecciones y secretos." --mode ask --tools read_file,execute_bash
-kli agent rm security-auditor
+pnpm --filter @kli/server start
+# equivalent: node packages/server/dist/serve.js [--port <n>] [--host <h>] [--workspace <dir>]
 ```
 
-The same CRUD is available in the Studio's **Subagentes** panel.
+Endpoints:
 
-## CLI
+- `GET /api/health` — plugins, tools per mode, backends, skills and agents.
+- `POST /api/chat` — one agent run, streamed as SSE (`token`, `reasoning`,
+  `tool.start`, `tool.end`, `agent.*`, `done`, `error`). The provider is resolved
+  from the server env; the UI may only send its id/kind/baseUrl.
+- `POST /api/provider/passthrough` — the single gateway for every non-agent
+  provider call (chat, embeddings, images, audio, `/models`). The server injects
+  the API key and forwards upstream, so the browser never holds it.
+- `GET|POST|DELETE /api/projects` — project CRUD; `POST /api/chat` and
+  `POST /api/read` accept `projectPath`/`projectId` so each run is isolated
+  inside its project folder.
+- `GET|POST /api/agents` — subagent CRUD over `.kli/agents.json`.
+- `GET /api/fs/dirs` — lists folders on the machine running the server (the
+  Studio's folder picker uses this; browsers cannot read absolute paths).
 
-```
-kli run [--mode plan|build|ask] [--project <name>] [--debug] [--quiet] "<task>"
-kli repl [--mode plan|build|ask] [--project <name>]
-kli prompt [--mode plan|build|ask] [--task "<task>"]   # print the assembled system prompt
-kli tools  [--mode plan|build|ask]                      # list visible tools + JSON Schemas
-kli graph build                                        # build the code graph (AST backends)
-kli graph status                                       # show the cached graph summary
-kli session list | kli session resume <id>
-kli project create <name> | kli project list
-kli agent list | kli agent show <id> | kli agent add <id> [flags] | kli agent rm <id>
-kli serve [--port <n>] [--host <h>]                    # harness server for KLI Studio
-kli plugin list
-kli model list
-kli help
-```
+## Configuration
 
-`kli run` streams assistant tokens as they arrive and prints live tool/model
-activity plus tokens/s to stderr. `--quiet` suppresses the live logs;
-`--debug` also prints the assembled system prompt.
-
-## Configuration (`.env`)
-
-All model/runtime configuration is read from the environment (`.env` is loaded
-automatically). Nothing is hardcoded in the providers.
+`@kli/server` reads its configuration from the repo-root `.env` (loaded at
+startup; shell exports win). Nothing is hardcoded in the providers, and the
+Studio sends no credentials — the server is the only component that knows the
+provider URL and key.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `KLI_MODEL` | `auto` | Model id passed to the provider |
 | `KLI_TEMPERATURE` | `0.7` | Sampling temperature |
-| `KLI_MAX_TOKENS` | — | Task token **budget** (CLI) |
+| `KLI_MAX_TOKENS` | — | Task token **budget** |
 | `KLI_MAX_OUTPUT_TOKENS` | `4096` | Per-response completion cap (`max_tokens`) |
 | `KLI_STREAM` | `1` | Stream tokens (`0` disables) |
 | `KLI_TOP_P`, `KLI_PRESENCE_PENALTY`, `KLI_FREQUENCY_PENALTY`, `KLI_SEED` | — | Optional sampling |

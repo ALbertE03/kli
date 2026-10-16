@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
-import { envApiKey } from '@/lib/providers';
 
 interface SecretsState {
   /** providerId → API key. Kept in sessionStorage only, never on disk. */
@@ -34,7 +33,11 @@ export const useSecrets = create<SecretsState>()(
   ),
 );
 
-/** Runtime key for a provider: user-entered value first, build-time env second. */
+/**
+ * Runtime key for a provider. The authoritative key lives in the KLI server's
+ * `.env` (see `@kli/server`); anything entered here is only a fallback for
+ * providers the server has no credentials for.
+ */
 export function resolveApiKey(providerId: string, stored: Record<string, string>): string {
-  return stored[providerId] || envApiKey(providerId);
+  return stored[providerId] ?? '';
 }

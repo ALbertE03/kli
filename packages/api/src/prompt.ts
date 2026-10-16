@@ -65,6 +65,7 @@ export interface PromptContext {
   readonly mcpServers?: readonly McpServerInfo[];
   readonly env: Readonly<Record<string, string>>;
   readonly userMessage: string;
+  readonly projectId?: string;
 }
 
 export type PromptFragmentContent =

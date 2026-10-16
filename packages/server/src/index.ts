@@ -12,6 +12,7 @@ import { readFileSync, existsSync, mkdirSync, readdirSync, writeFileSync, rmSync
 import { join, resolve as resolveFs, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
+import { Readable } from "node:stream";
 import {
   AgentDefinitionSchema,
   createDelegationTool,
@@ -65,6 +66,21 @@ const CAPABILITIES: readonly Capability[] = [
   "secrets.read",
   "env.read",
 ];
+
+/**
+ * Provider endpoints the browser is allowed to reach through the server. The
+ * key stays server-side, so the proxy only forwards these OpenAI/Anthropic
+ * routes instead of accepting arbitrary paths (and arbitrary hosts).
+ */
+const ALLOWED_PROVIDER_PATHS = new Set<string>([
+  "/models",
+  "/chat/completions",
+  "/messages",
+  "/embeddings",
+  "/images/generations",
+  "/audio/speech",
+  "/audio/transcriptions",
+]);
 
 /* ── Workspace state on disk ───────────────────────────────────────────── */
 
@@ -224,27 +240,105 @@ export class Workspace {
 
 /* ── Provider construction ─────────────────────────────────────────────── */
 
-export interface ProviderRequest {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
+/**
+ * Everything the server needs to reach a provider. The Studio sends only the
+ * *identity* of a provider (id/kind/baseUrl); the API key always comes from the
+ * server environment, so credentials never travel through the browser.
+ */
+export interface ProviderSpec {
+  id?: string;
+  kind?: "openai" | "anthropic";
+  baseUrl?: string;
+  /** Optional fallback; the server env takes precedence when it is set. */
+  apiKey?: string;
+  model?: string;
   temperature?: number;
   maxTokens?: number;
 }
 
+/** Backwards-compatible alias: older callers used `ProviderRequest`. */
+export type ProviderRequest = ProviderSpec;
+
+interface ResolvedProvider {
+  kind: "openai" | "anthropic";
+  baseUrl: string;
+  apiKey: string;
+}
+
+const DEFAULT_OPENAI_BASE = "http://127.0.0.1:31415/v1";
+
+function trimSlash(value: string | undefined): string {
+  return value ? value.replace(/\/+$/, "") : "";
+}
+
 /**
- * Builds a provider from the *client's* configuration. The UI owns provider
- * selection at runtime, so the server creates providers per request instead of
- * pinning one at boot.
+ * Resolves a provider spec against the server environment. Known built-ins
+ * (freellmapi, openai, anthropic, ollama, lmstudio) get their base URL and key
+ * from env/presets; custom providers keep the base URL the Studio sent. Any
+ * `apiKey` in the spec is only a fallback for providers the env doesn't cover.
  */
-export async function createProvider(req: ProviderRequest): Promise<Provider> {
+export function resolveProvider(spec: ProviderSpec = {}): ResolvedProvider {
+  const id = (spec.id ?? "").trim().toLowerCase();
+  const isAnthropic = spec.kind === "anthropic" || id === "anthropic";
+
+  if (isAnthropic) {
+    return {
+      kind: "anthropic",
+      baseUrl: trimSlash(spec.baseUrl) || "https://api.anthropic.com/v1",
+      apiKey: process.env.ANTHROPIC_API_KEY || spec.apiKey || "not-needed",
+    };
+  }
+
+  const presetBase =
+    id === "ollama"
+      ? "http://127.0.0.1:11434/v1"
+      : id === "lmstudio"
+        ? "http://127.0.0.1:1234/v1"
+        : id === "openai"
+          ? "https://api.openai.com/v1"
+          : process.env.OPENAI_BASE_URL || DEFAULT_OPENAI_BASE;
+
+  // `freellmapi` (and specs with no id) are what the workspace `.env` points at,
+  // so the server's OPENAI_BASE_URL wins over whatever base URL the UI cached.
+  const envOwnsBase = id === "" || id === "freellmapi";
+  const baseUrl =
+    (envOwnsBase ? process.env.OPENAI_BASE_URL : undefined) || trimSlash(spec.baseUrl) || presetBase;
+
+  // The server env is authoritative for FreeLLMAPI (the workspace default). For
+  // any other OpenAI-compatible provider the key typed in Settings wins, and the
+  // env key is only a fallback for `openai` / id-less requests. Local runtimes
+  // (Ollama/LM Studio) never get the OpenAI key.
+  let apiKey: string;
+  if (id === "freellmapi") {
+    apiKey = process.env.OPENAI_API_KEY || spec.apiKey || "not-needed";
+  } else {
+    const envKey = id === "" || id === "openai" ? process.env.OPENAI_API_KEY : undefined;
+    apiKey = spec.apiKey || envKey || "not-needed";
+  }
+
+  return { kind: "openai", baseUrl, apiKey };
+}
+
+/**
+ * Builds a provider for one agent run. The API key is resolved from the server
+ * environment (see `resolveProvider`); the Studio never has to send it.
+ */
+export async function createProvider(req: ProviderRequest = {}): Promise<Provider> {
+  const resolved = resolveProvider(req);
+  const model = req.model || process.env.KLI_MODEL || "auto";
+
+  if (resolved.kind === "anthropic") {
+    const mod = await import("@kli/provider-anthropic");
+    return new mod.AnthropicProvider(resolved.apiKey, model);
+  }
+
   const mod = await import("@kli/provider-openai");
   return new mod.OpenAiProvider({
-    apiKey: req.apiKey || "not-needed",
-    baseURL: req.baseUrl,
-    model: req.model,
-    temperature: req.temperature ?? 0.7,
-    maxTokens: req.maxTokens ?? 4096,
+    apiKey: resolved.apiKey,
+    baseURL: resolved.baseUrl,
+    model,
+    ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
+    ...(req.maxTokens === undefined ? {} : { maxTokens: req.maxTokens }),
     stream: true,
   });
 }
@@ -275,6 +369,8 @@ interface ChatRequest {
   provider?: ProviderRequest;
   /** Folder of the active project — the run is isolated inside it. */
   projectPath?: string;
+  /** ID of the active project (used for context/prompt injection). */
+  projectId?: string;
   budget?: { tokensTotal?: number; costLimitUsd?: number; deadlineMs?: number };
 }
 
@@ -435,6 +531,8 @@ export class KliServer {
         return this.listDirs(url, res);
       case "GET /api/models":
         return this.listModels(req, res);
+      case "POST /api/provider/passthrough":
+        return this.providerPassthrough(req, res);
       case "GET /api/graph":
         return this.graph(res);
       case "POST /api/graph":
@@ -591,7 +689,6 @@ export class KliServer {
 
   private async listModels(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = (await this.body(req)) as ProviderRequest;
-    if (!body.baseUrl) return this.json(res, 400, { error: "baseUrl is required" });
     try {
       const provider = await createProvider({ ...body, model: body.model || "auto" });
       const models = (await provider.listModels?.()) ?? [];
@@ -599,6 +696,103 @@ export class KliServer {
     } catch (err) {
       this.json(res, 502, { error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /**
+   * Forwards one request to the active provider using the server's own
+   * credentials. The Studio sends the provider identity, the OpenAI/Anthropic
+   * path and the JSON body; this method resolves base URL + API key from the
+   * environment and streams the upstream response back untouched (JSON, SSE
+   * token streams and binary audio all work).
+   */
+  private async providerPassthrough(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const payload = (await this.body(req)) as {
+      provider?: ProviderSpec;
+      path?: string;
+      method?: string;
+      body?: unknown;
+      form?: { model?: string; filename?: string; contentType?: string; audioBase64?: string };
+    };
+
+    const targetPath = payload.path ?? "";
+    if (!ALLOWED_PROVIDER_PATHS.has(targetPath)) {
+      return this.json(res, 400, { error: `Provider path not allowed: ${targetPath || "(empty)"}` });
+    }
+
+    const resolved = resolveProvider(payload.provider);
+    const url = `${resolved.baseUrl}${targetPath}`;
+    const method = (payload.method ?? "POST").toUpperCase();
+
+    const headers: Record<string, string> = {};
+    if (resolved.kind === "anthropic") {
+      headers["x-api-key"] = resolved.apiKey;
+      headers["anthropic-version"] = "2023-06-01";
+    } else if (resolved.apiKey) {
+      headers.authorization = `Bearer ${resolved.apiKey}`;
+    }
+
+    const controller = new AbortController();
+    this.running.add(controller);
+    req.on("close", () => {
+      controller.abort();
+      this.running.delete(controller);
+    });
+
+    let init: RequestInit;
+    if (payload.form) {
+      const form = new FormData();
+      const bytes = Buffer.from(payload.form.audioBase64 ?? "", "base64");
+      form.append(
+        "file",
+        new Blob([bytes], { type: payload.form.contentType || "audio/mpeg" }),
+        payload.form.filename || "audio.mp3",
+      );
+      form.append("model", payload.form.model ?? "");
+      init = { method, headers, body: form, signal: controller.signal };
+    } else if (method === "GET" || payload.body === undefined) {
+      init = { method, headers, signal: controller.signal };
+    } else {
+      init = {
+        method,
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify(payload.body),
+        signal: controller.signal,
+      };
+    }
+
+    let upstream: Response;
+    try {
+      upstream = await fetch(url, init);
+    } catch (err) {
+      this.running.delete(controller);
+      if (controller.signal.aborted) {
+        if (!res.writableEnded) res.end();
+        return;
+      }
+      return this.json(res, 502, {
+        error: `No se pudo contactar el proveedor (${resolved.baseUrl}): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      });
+    }
+
+    res.writeHead(upstream.status, {
+      "content-type": upstream.headers.get("content-type") ?? "application/json",
+      "cache-control": "no-cache, no-transform",
+    });
+
+    if (!upstream.body) {
+      res.end();
+      this.running.delete(controller);
+      return;
+    }
+
+    Readable.fromWeb(upstream.body as unknown as Parameters<typeof Readable.fromWeb>[0])
+      .on("error", () => {
+        if (!res.writableEnded) res.end();
+      })
+      .pipe(res)
+      .on("close", () => this.running.delete(controller));
   }
 
   private async graph(res: ServerResponse): Promise<void> {
@@ -635,10 +829,10 @@ export class KliServer {
   private async chat(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const body = (await this.body(req)) as ChatRequest;
     if (!body.message?.trim()) return this.json(res, 400, { error: "message is required" });
-    const requestedProvider = body.provider;
-    if (!requestedProvider?.baseUrl || !requestedProvider.model) {
-      return this.json(res, 400, { error: "provider.baseUrl and provider.model are required" });
-    }
+    const requestedProvider = body.provider ?? {};
+    // The provider is an identity hint only: the base URL and API key come from
+    // the server env (see `resolveProvider`), so neither is required here.
+    const providerModel = requestedProvider.model || process.env.KLI_MODEL || "auto";
 
     // Resolve the project folder *before* the SSE stream starts so a bad path
     // surfaces as a plain 400 instead of a mid-stream `error` event. The whole
@@ -672,7 +866,7 @@ export class KliServer {
 
     try {
       const kernel = await this.ensureKernel(runRoot);
-      const provider = await createProvider(requestedProvider);
+      const provider = await createProvider({ ...requestedProvider, model: providerModel });
       const mode: Mode = MODES.includes(body.mode as Mode) ? (body.mode as Mode) : "build";
       const config = this.configFor(runRoot);
       const secrets = collectSecrets();
@@ -736,7 +930,7 @@ export class KliServer {
       send("start", {
         runId,
         mode,
-        model: requestedProvider.model,
+        model: providerModel,
         agents: kernel.listAgents().filter((agent) => !agent.hidden).map((agent) => agent.id),
         tools: kernel.registry.snapshot().toolsFor(mode, stubContext(runRoot)).length,
       });
@@ -752,6 +946,7 @@ export class KliServer {
         secrets,
         config,
         signal: controller.signal,
+        projectId: body.projectId,
         onToken: (delta) => send("token", { delta }),
         onReasoning: (delta) => send("reasoning", { delta }),
         onToolActivity: (activity) => {

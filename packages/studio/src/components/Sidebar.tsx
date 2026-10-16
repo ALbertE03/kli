@@ -166,7 +166,7 @@ function HarnessCard() {
 
       {!connected ? (
         <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">
-          Ejecuta <code>kli serve</code> en el workspace para habilitar herramientas y subagentes.
+          Ejecuta <code>pnpm --filter @kli/server start</code> en el workspace para habilitar herramientas y subagentes.
         </p>
       ) : null}
     </section>

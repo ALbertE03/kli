@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Check, KeyRound, Plus, RefreshCw, Server, Trash2, Wifi } from 'lucide-react';
 import { Alert, Badge, Button, Dialog, Input } from '@/components/ui';
-import { envApiKey, slugifyProviderId } from '@/lib/providers';
+import { slugifyProviderId } from '@/lib/providers';
 import { normalizeBaseUrl } from '@/lib/utils';
 import { useActiveProvider, useStore } from '@/store';
 import { resolveApiKey, useSecrets } from '@/store/secrets';
@@ -41,7 +41,6 @@ export function ProviderSettings({ open, onClose }: ProviderSettingsProps) {
   }, [activeProvider]);
 
   const effectiveKey = resolveApiKey(activeProvider.id, keys);
-  const fromEnv = !keys[activeProvider.id] && Boolean(envApiKey(activeProvider.id));
   const dirty = label !== activeProvider.label || normalizeBaseUrl(baseUrl) !== activeProvider.baseUrl || kind !== activeProvider.kind;
 
   const saveActive = () => {
@@ -170,20 +169,21 @@ export function ProviderSettings({ open, onClose }: ProviderSettingsProps) {
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <KeyRound className="h-3 w-3" />
                 API key
-                {fromEnv ? (
-                  <Badge variant="secondary" className="px-1 py-0 text-[10px]">
-                    desde VITE_*
-                  </Badge>
-                ) : null}
+                <Badge variant="secondary" className="px-1 py-0 text-[10px]">
+                  servidor: .env
+                </Badge>
               </span>
               <Input
                 type="password"
                 value={keys[activeProvider.id] ?? ''}
-                placeholder={fromEnv ? 'Clave desde el entorno' : effectiveKey || 'Opcional para servidores locales'}
+                placeholder={effectiveKey ? 'Usando clave del servidor' : 'Opcional: solo si el servidor no tiene clave'}
                 onChange={(event) => setKey(activeProvider.id, event.target.value.trim())}
               />
               <span className="block text-[11px] text-muted-foreground">
-                Se guarda en <code className="text-foreground">sessionStorage</code> y se borra al cerrar la pestaña.
+                El servidor KLI resuelve la clave desde su <code className="text-foreground">.env</code>{' '}
+                (<code className="text-foreground">OPENAI_API_KEY</code> /{' '}
+                <code className="text-foreground">ANTHROPIC_API_KEY</code>). Lo que escribas aquí es solo un
+                respaldo de sesión.
               </span>
             </label>
           </div>

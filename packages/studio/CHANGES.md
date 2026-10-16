@@ -181,11 +181,10 @@ index.html               title/description → "KLI Studio"
 pnpm install
 
 # 2 — harness (terminal 1)
-kli serve --port 4317
+pnpm --filter @kli/server start
 
 # 3 — UI (terminal 2)
 cd packages/studio
-cp .env.example .env.local      # VITE_FREELLMAPI_KEY si aplica
 pnpm dev                        # http://localhost:5173
 ```
 

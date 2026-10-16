@@ -1,7 +1,5 @@
 import type { ChatMessage, ModelInfo, ProviderConfig, Usage } from '@/types';
-import { normalizeBaseUrl } from '@/lib/utils';
-
-const ANTHROPIC_VERSION = '2023-06-01';
+import { getGatewayBaseUrl } from '@/lib/gateway';
 
 /** Error carrying the HTTP status so the UI can map it to a token/connection state. */
 export class ApiError extends Error {
@@ -32,17 +30,56 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function authHeaders(provider: ProviderConfig, apiKey: string): Record<string, string> {
-  if (provider.kind === 'anthropic') {
-    return {
-      'x-api-key': apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
-      'content-type': 'application/json',
-    };
+/** One provider request the server will forward on the Studio's behalf. */
+interface ProviderCall {
+  provider: ProviderConfig;
+  /** Fallback key for providers the server has no env credentials for. */
+  apiKey: string;
+  /** OpenAI/Anthropic path, e.g. `/chat/completions`. */
+  path: string;
+  method?: 'GET' | 'POST';
+  /** JSON payload (ignored for GET). */
+  body?: unknown;
+  /** Multipart upload (audio transcription). */
+  form?: { model: string; filename: string; contentType: string; audioBase64: string };
+  signal?: AbortSignal;
+}
+
+/**
+ * Forwards a provider request through `@kli/server`, which resolves the base
+ * URL and API key from its own environment. The Studio never holds the key, so
+ * this is the only way providers are reached.
+ */
+async function callProvider(call: ProviderCall): Promise<Response> {
+  const payload: Record<string, unknown> = {
+    provider: {
+      id: call.provider.id,
+      kind: call.provider.kind,
+      baseUrl: call.provider.baseUrl,
+      ...(call.apiKey ? { apiKey: call.apiKey } : {}),
+    },
+    path: call.path,
+    method: call.method ?? 'POST',
+  };
+  if (call.form) payload.form = call.form;
+  else if (call.body !== undefined) payload.body = call.body;
+
+  const base = getGatewayBaseUrl();
+  try {
+    return await fetch(`${base}/api/provider/passthrough`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      ...(call.signal ? { signal: call.signal } : {}),
+    });
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
+    throw new ApiError(
+      `No se pudo contactar el servidor KLI (${base}). ¿Está corriendo el servidor?`,
+      0,
+      'offline',
+    );
   }
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-  return headers;
 }
 
 /** Extract a human message out of the many error shapes providers return. */
@@ -56,6 +93,9 @@ function extractErrorMessage(body: unknown, fallback: string): string {
     const type = asString(error.type);
     if (type) return type;
   }
+  // The KLI server's own errors are a plain `{ error: "..." }` string.
+  const errorText = asString(record.error);
+  if (errorText) return errorText;
   const message = asString(record.message) ?? asString(record.detail);
   if (message) return message;
   if (typeof body === 'string' && body.trim()) return body.trim().slice(0, 400);
@@ -89,22 +129,17 @@ async function requestJson<T>(
   provider: ProviderConfig,
   apiKey: string,
   path: string,
-  init: RequestInit,
+  init: { method?: 'GET' | 'POST'; body?: unknown; signal?: AbortSignal },
   fallbackMessage: string,
 ): Promise<T> {
-  const url = `${normalizeBaseUrl(provider.baseUrl)}${path}`;
-  let response: Response;
-  try {
-    response = await fetch(url, { ...init, headers: { ...authHeaders(provider, apiKey), ...init.headers } });
-  } catch (cause) {
-    throw new ApiError(
-      `No se pudo conectar con ${provider.label} (${normalizeBaseUrl(provider.baseUrl)}). ${
-        cause instanceof Error ? cause.message : ''
-      }`.trim(),
-      0,
-      'network_error',
-    );
-  }
+  const response = await callProvider({
+    provider,
+    apiKey,
+    path,
+    ...(init.method === undefined ? {} : { method: init.method }),
+    ...(init.body === undefined ? {} : { body: init.body }),
+    ...(init.signal === undefined ? {} : { signal: init.signal }),
+  });
   if (!response.ok) throw await readError(response, fallbackMessage);
   return (await response.json()) as T;
 }
@@ -322,23 +357,14 @@ export async function streamChat(request: ChatRequest): Promise<void> {
         ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
       };
 
-  const url = `${normalizeBaseUrl(provider.baseUrl)}${isAnthropic ? '/messages' : '/chat/completions'}`;
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: authHeaders(provider, apiKey),
-      body: JSON.stringify(payload),
-      ...(signal ? { signal } : {}),
-    });
-  } catch (cause) {
-    if (signal?.aborted) return;
-    throw new ApiError(
-      `No se pudo conectar con ${provider.label}. ${cause instanceof Error ? cause.message : ''}`.trim(),
-      0,
-      'network_error',
-    );
-  }
+  const response = await callProvider({
+    provider,
+    apiKey,
+    path: isAnthropic ? '/messages' : '/chat/completions',
+    method: 'POST',
+    body: payload,
+    ...(signal ? { signal } : {}),
+  });
   if (!response.ok) throw await readError(response, 'Error al iniciar el stream');
 
   let usage: Usage | null = null;
@@ -387,7 +413,7 @@ export async function createEmbedding(
     provider,
     apiKey,
     '/embeddings',
-    { method: 'POST', body: JSON.stringify({ model, input }), signal },
+    { method: 'POST', body: { model, input }, signal },
     'Error al generar el embedding',
   );
   const record = asRecord(body);
@@ -442,7 +468,7 @@ export async function generateImage(
       provider,
       apiKey,
       '/images/generations',
-      { method: 'POST', body: JSON.stringify(payload), signal: options.signal },
+      { method: 'POST', body: payload, ...(options.signal ? { signal: options.signal } : {}) },
       'Error al generar la imagen',
     );
 
@@ -524,28 +550,14 @@ export async function synthesizeSpeech(
   text: string,
   options: { voice: string; format: string; signal?: AbortSignal },
 ): Promise<Blob> {
-  const url = `${normalizeBaseUrl(provider.baseUrl)}/audio/speech`;
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: authHeaders(provider, apiKey),
-      body: JSON.stringify({
-        model,
-        input: text,
-        voice: options.voice,
-        response_format: options.format,
-      }),
-      signal: options.signal,
-    });
-  } catch (cause) {
-    if (options.signal?.aborted) throw new ApiError('Cancelado', 0, 'aborted');
-    throw new ApiError(
-      `No se pudo conectar con ${provider.label}. ${cause instanceof Error ? cause.message : ''}`.trim(),
-      0,
-      'network_error',
-    );
-  }
+  const response = await callProvider({
+    provider,
+    apiKey,
+    path: '/audio/speech',
+    method: 'POST',
+    body: { model, input: text, voice: options.voice, response_format: options.format },
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
   if (!response.ok) throw await readError(response, 'Error al sintetizar el audio');
   return response.blob();
 }
@@ -557,32 +569,35 @@ export async function transcribeAudio(
   audio: Blob,
   signal?: AbortSignal,
 ): Promise<string> {
-  const url = `${normalizeBaseUrl(provider.baseUrl)}/audio/transcriptions`;
-  const form = new FormData();
   const extension = audio.type.includes('wav') ? 'wav' : 'mp3';
-  form.append('file', audio, `audio.${extension}`);
-  form.append('model', model);
-
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: 'POST',
-      headers: provider.kind === 'anthropic' ? authHeaders(provider, apiKey) : apiKey ? { authorization: `Bearer ${apiKey}` } : {},
-      body: form,
-      signal,
-    });
-  } catch (cause) {
-    if (signal?.aborted) throw new ApiError('Cancelado', 0, 'aborted');
-    throw new ApiError(
-      `No se pudo conectar con ${provider.label}. ${cause instanceof Error ? cause.message : ''}`.trim(),
-      0,
-      'network_error',
-    );
-  }
+  const response = await callProvider({
+    provider,
+    apiKey,
+    path: '/audio/transcriptions',
+    method: 'POST',
+    form: {
+      model,
+      filename: `audio.${extension}`,
+      contentType: audio.type || 'audio/mpeg',
+      audioBase64: await blobToBase64(audio),
+    },
+    ...(signal ? { signal } : {}),
+  });
   if (!response.ok) throw await readError(response, 'Error al transcribir el audio');
 
   const body = (await response.json()) as unknown;
   const text = asString(asRecord(body)?.text);
   if (!text) throw new ApiError('La transcripción vino vacía', 200, 'bad_response');
   return text;
+}
+
+/** Encodes a Blob as base64 so it can travel in the JSON passthrough envelope. */
+async function blobToBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = '';
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
+  return btoa(binary);
 }
