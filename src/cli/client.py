@@ -111,9 +111,9 @@ class HarnessClient:
         await self._client.aclose()
 
     # ------------- JSON -------------
-    async def _get(self, path: str, **params: Any) -> Any:
+    async def _get(self, route: str, **params: Any) -> Any:
         try:
-            resp = await self._client.get(path, params=params or None)
+            resp = await self._client.get(route, params=params or None)
         except httpx.HTTPError as exc:
             raise ApiError(0, f"No se pudo contactar con {self.config.base_url}: {exc}") from exc
         return self._json(resp)
@@ -124,6 +124,13 @@ class HarnessClient:
         except httpx.HTTPError as exc:
             raise ApiError(0, f"No se pudo contactar con {self.config.base_url}: {exc}") from exc
         return self._json(resp)
+
+    async def _delete(self, path: str) -> None:
+        try:
+            resp = await self._client.delete(path)
+        except httpx.HTTPError as exc:
+            raise ApiError(0, f"No se pudo contactar con {self.config.base_url}: {exc}") from exc
+        self._json(resp)
 
     @staticmethod
     def _json(resp: httpx.Response) -> Any:
@@ -161,11 +168,79 @@ class HarnessClient:
         return list(data) if isinstance(data, list) else []
 
     async def delete_thread(self, thread_id: str) -> None:
-        await self._client.delete(f"{self.config.api_root}/threads/{thread_id}")
+        await self._delete(f"{self.config.api_root}/threads/{thread_id}")
 
     async def cancel(self, thread_id: str) -> bool:
         data = await self._post(f"{self.config.api_root}/chat/cancel", {"thread_id": thread_id})
         return bool(data.get("cancelled")) if isinstance(data, dict) else False
+
+    # ------------- proyectos -------------
+    async def create_project(self, name: str, path: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"name": name}
+        if path:
+            body["path"] = path
+        data = await self._post(f"{self.config.api_root}/projects", body)
+        return data if isinstance(data, dict) else {}
+
+    async def browse_projects(self, path: str | None = None) -> dict[str, Any]:
+        """Lista carpetas de una raíz permitida (`GET /api/v1/projects/browse`)."""
+        data = await self._get(f"{self.config.api_root}/projects/browse", path=path)
+        return data if isinstance(data, dict) else {}
+
+    async def delete_project(self, name: str) -> None:
+        await self._delete(f"{self.config.api_root}/projects/{name}")
+
+    # ------------- skills -------------
+    async def create_skill(self, body: dict[str, Any]) -> dict[str, Any]:
+        data = await self._post(f"{self.config.api_root}/skills", body)
+        return data if isinstance(data, dict) else {}
+
+    async def delete_skill(self, name: str) -> None:
+        await self._delete(f"{self.config.api_root}/skills/{name}")
+
+    # ------------- proveedores -------------
+    async def create_provider(self, body: dict[str, Any]) -> dict[str, Any]:
+        data = await self._post(f"{self.config.api_root}/providers", body)
+        return data if isinstance(data, dict) else {}
+
+    async def delete_provider(self, name: str) -> None:
+        await self._delete(f"{self.config.api_root}/providers/{name}")
+
+    async def provider_models(self, name: str) -> list[str]:
+        data = await self._get(f"{self.config.api_root}/providers/{name}/models")
+        return list(data.get("models", [])) if isinstance(data, dict) else []
+
+    # ------------- MCP -------------
+    async def list_mcp(self) -> list[dict[str, Any]]:
+        data = await self._get(f"{self.config.api_root}/mcp")
+        return list(data) if isinstance(data, list) else []
+
+    async def create_mcp(self, body: dict[str, Any]) -> dict[str, Any]:
+        data = await self._post(f"{self.config.api_root}/mcp", body)
+        return data if isinstance(data, dict) else {}
+
+    async def delete_mcp(self, name: str) -> None:
+        await self._delete(f"{self.config.api_root}/mcp/{name}")
+
+    # ------------- tools HTTP -------------
+    async def list_http_tools(self) -> list[dict[str, Any]]:
+        data = await self._get(f"{self.config.api_root}/tools/http")
+        return list(data) if isinstance(data, list) else []
+
+    async def create_http_tool(self, body: dict[str, Any]) -> dict[str, Any]:
+        data = await self._post(f"{self.config.api_root}/tools/http", body)
+        return data if isinstance(data, dict) else {}
+
+    async def delete_http_tool(self, name: str) -> None:
+        await self._delete(f"{self.config.api_root}/tools/http/{name}")
+
+    # ------------- memoria -------------
+    async def list_memories(self) -> list[dict[str, Any]]:
+        data = await self._get(f"{self.config.api_root}/memories")
+        return list(data) if isinstance(data, list) else []
+
+    async def delete_memory(self, key: str) -> None:
+        await self._delete(f"{self.config.api_root}/memories/{key}")
 
     # ------------- SSE -------------
     def _chat_payload(self, body: dict[str, Any]) -> dict[str, Any]:

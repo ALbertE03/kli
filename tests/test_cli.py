@@ -60,6 +60,7 @@ class FakeClient:
         self.sent: list[dict[str, Any]] = []
         self.resumed: Any = None
         self.cancelled = False
+        self.calls: list[tuple[str, Any]] = []  # (método, argumentos)
 
     async def health(self) -> dict[str, Any]:
         return {"status": "ok", "version": "0.1.0"}
@@ -72,6 +73,8 @@ class FakeClient:
             "enable_exec": False,
             "recursion_limit": 100,
             "max_custom_per_user": 50,
+            "projects_dir": "/data/projects",
+            "projects_import_roots": ["/data/projects", "/host"],
         }
 
     async def registry(self) -> dict[str, Any]:
@@ -85,6 +88,81 @@ class FakeClient:
 
     async def threads(self) -> list[dict[str, Any]]:
         return [{"thread_id": "abc123", "title": "hola", "mode": "plan", "updated_at": "hoy"}]
+
+    async def thread_messages(self, thread_id: str) -> list[dict[str, Any]]:
+        self.calls.append(("thread_messages", thread_id))
+        return [
+            {"id": "1", "role": "human", "content": "hola"},
+            {"id": "2", "role": "ai", "content": "**hola** a ti"},
+        ]
+
+    # ---- recursos: se registran las llamadas para poder comprobar el CRUD ----
+    async def create_project(self, name: str, path: str | None = None) -> dict[str, Any]:
+        self.calls.append(("create_project", (name, path)))
+        return {"name": name, "root": f"/data/projects/{name}"}
+
+    async def delete_project(self, name: str) -> None:
+        self.calls.append(("delete_project", name))
+
+    async def create_skill(self, body: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("create_skill", body))
+        return body
+
+    async def delete_skill(self, name: str) -> None:
+        self.calls.append(("delete_skill", name))
+
+    async def create_provider(self, body: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("create_provider", body))
+        return body
+
+    async def delete_provider(self, name: str) -> None:
+        self.calls.append(("delete_provider", name))
+
+    async def models(self, provider: str | None = None) -> list[str]:
+        self.calls.append(("models", provider))
+        return ["gpt-4o", "gpt-6-luna"]
+
+    async def provider_models(self, name: str) -> list[str]:
+        return ["gpt-4o"]
+
+    async def browse_projects(self, path: str | None = None) -> dict[str, Any]:
+        self.calls.append(("browse_projects", path))
+        return {
+            "path": path or "/data/projects",
+            "parent": "/data",
+            "dirs": ["mi-repo", "otro"],
+            "files": ["notas.txt"],
+            "roots": ["/data/projects", "/host"],
+        }
+
+    async def list_mcp(self) -> list[dict[str, Any]]:
+        return []
+
+    async def create_mcp(self, body: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("create_mcp", body))
+        return body
+
+    async def delete_mcp(self, name: str) -> None:
+        self.calls.append(("delete_mcp", name))
+
+    async def list_http_tools(self) -> list[dict[str, Any]]:
+        return []
+
+    async def create_http_tool(self, body: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append(("create_http_tool", body))
+        return body
+
+    async def delete_http_tool(self, name: str) -> None:
+        self.calls.append(("delete_http_tool", name))
+
+    async def list_memories(self) -> list[dict[str, Any]]:
+        return [{"key": "nota", "value": "recuerdame esto"}]
+
+    async def delete_memory(self, key: str) -> None:
+        self.calls.append(("delete_memory", key))
+
+    async def delete_thread(self, thread_id: str) -> None:
+        self.calls.append(("delete_thread", thread_id))
 
     async def stream_chat(self, body: dict[str, Any]):
         self.sent.append(body)
@@ -301,7 +379,224 @@ def test_tool_card_state_changes_are_visible():
     _with_app(scenario)
 
 
-@pytest.mark.parametrize("command", ["/help", "/tools", "/skills", "/projects", "/threads"])
+# ---------------------------------------------------------------- recursos (CRUD)
+
+
+def _texts(app: KliApp) -> str:
+    """Todo el texto que se ve en el chat (para comprobar los mensajes)."""
+    parts: list[str] = []
+    for widget in app.chat.children:
+        source = getattr(widget, "_markdown", None)  # widgets Markdown
+        if isinstance(source, str):
+            parts.append(source)
+        content = getattr(widget, "content", None)  # widgets Static
+        if content is not None and hasattr(content, "plain"):
+            parts.append(content.plain)
+    return "\n".join(parts)
+
+
+def test_project_create_calls_the_api_and_shows_the_folder():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/project create mi_proyecto")
+            assert ("create_project", ("mi_proyecto", None)) in client.calls
+            assert app.registry  # el registro se recarga
+
+    _run(scenario)
+
+
+def test_project_delete_calls_the_api():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/project delete demo")
+            assert ("delete_project", "demo") in client.calls
+
+    _run(scenario)
+
+
+def test_skill_create_sends_name_description_and_tools():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command('/skill create nueva "descripción larga" "instrucciones aquí" --tools web_search,fs_read_file')
+            calls = [c for c in client.calls if c[0] == "create_skill"]
+            assert calls, "no se creó la skill"
+            body = calls[0][1]
+            assert body["name"] == "nueva"
+            assert body["description"] == "descripción larga"
+            assert body["instructions"] == "instrucciones aquí"
+            assert body["tool_names"] == ["web_search", "fs_read_file"]
+
+    _run(scenario)
+
+
+def test_provider_create_sends_kind_and_base_url():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/provider create local openai http://127.0.0.1:11434/v1 qwen3 clave")
+            calls = [c for c in client.calls if c[0] == "create_provider"]
+            assert calls
+            body = calls[0][1]
+            assert body == {
+                "name": "local",
+                "kind": "openai",
+                "base_url": "http://127.0.0.1:11434/v1",
+                "default_model": "qwen3",
+                "api_key": "clave",
+            }
+
+    _run(scenario)
+
+
+def test_http_and_mcp_commands_call_the_api():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command('/http add api_test "tool de prueba" https://example.com/api example.com')
+            await app._command("/http delete api_test")
+            await app._command("/mcp add srv https://mcp.example.com/mcp")
+            await app._command("/mcp delete srv")
+            names = [c[0] for c in client.calls]
+            assert "create_http_tool" in names and "delete_http_tool" in names
+            assert "create_mcp" in names and "delete_mcp" in names
+
+    _run(scenario)
+
+
+def test_memory_and_thread_commands_call_the_api():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/memory delete nota")
+            await app._command("/thread delete abc123")
+            names = [c[0] for c in client.calls]
+            assert "delete_memory" in names and "delete_thread" in names
+
+    _run(scenario)
+
+
+def test_thread_open_loads_the_conversation():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/thread open abc123")
+            assert app.thread_id == "abc123"
+            assert any(isinstance(w, UserMessage) for w in app.chat.children)
+            assert ("thread_messages", "abc123") in client.calls
+
+    _run(scenario)
+
+
+def test_project_browse_lists_folders_and_roots():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/project browse /host")
+            await pilot.pause()
+            assert ("browse_projects", "/host") in client.calls
+            text = _texts(app)
+            assert "mi-repo" in text and "notas.txt" in text
+            assert "/host" in text  # las raíces permitidas
+
+    _run(scenario)
+
+
+def test_project_import_uses_the_existing_folder():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/project import mi_repo /host/mi-repo")
+            assert ("create_project", ("mi_repo", "/host/mi-repo")) in client.calls
+            await pilot.pause()
+            text = _texts(app)
+            assert "POST /api/v1/projects" in text
+            assert "tal cual" in text  # deja claro que usa esa carpeta
+
+    _run(scenario)
+
+
+def test_project_import_without_path_explains_the_usage():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/project import mi_repo")
+            await pilot.pause()
+            assert not [c for c in client.calls if c[0] == "create_project"]
+            assert "POST /api/v1/projects" in _texts(app)
+
+    _run(scenario)
+
+
+def test_project_create_shows_the_allowed_roots_when_forbidden():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        app.server = {"projects_import_roots": ["/host", "/app/projects"]}
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            original = client.create_project
+
+            async def forbidden(name: str, path: str | None = None) -> dict[str, Any]:
+                from cli.client import ApiError
+
+                raise ApiError(403, "La carpeta queda fuera de las raíces permitidas")
+
+            client.create_project = forbidden  # type: ignore[method-assign]
+            await app._command("/project import mi_repo /tmp/no-permitido")
+            await pilot.pause()
+            text = _texts(app)
+            assert "/host" in text  # muestra las raíces permitidas
+            assert original is not None
+
+    _run(scenario)
+
+
+def test_empty_lists_suggest_the_command_and_the_endpoint():
+    """Si no hay recursos, el mensaje dice el comando y el endpoint (no solo 'créalos')."""
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.registry = {"modes": [], "skills": [], "tools": [], "providers": [], "projects": []}
+            await app._command("/projects")
+            await pilot.pause()
+            await app._command("/skills")
+            await pilot.pause()
+            await app._command("/mcp")
+            await pilot.pause()
+            text = _texts(app)
+            assert "POST /api/v1/projects" in text
+            assert "POST /api/v1/skills" in text
+            assert "POST /api/v1/mcp" in text
+
+    _run(scenario)
+
+
+@pytest.mark.parametrize("command", ["/help", "/tools", "/skills", "/projects", "/providers", "/memories", "/threads"])
 def test_slash_commands_do_not_crash(command: str):
     async def scenario(app: KliApp) -> None:
         app.client = FakeClient([])

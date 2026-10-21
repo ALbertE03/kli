@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from harness.config import Settings
 from harness.errors import Conflict, Forbidden, InvalidConfig, NotFound
@@ -22,12 +23,22 @@ class ProjectRegistry:
 
     def _allowed_roots(self) -> list[Path]:
         roots = [Path.cwd().resolve()]
+        roots.append(self._s.projects_dir.resolve())
         roots += [
             Path(r).expanduser().resolve()
             for r in self._s.projects_import_roots.split(",")
             if r.strip()
         ]
-        return roots
+        # sin duplicados y en orden estable
+        unique: list[Path] = []
+        for root in roots:
+            if root not in unique:
+                unique.append(root)
+        return unique
+
+    def import_roots(self) -> list[str]:
+        """Raíces desde las que se puede importar una carpeta existente."""
+        return [str(root) for root in self._allowed_roots()]
 
     def _validated_root(self, raw: str) -> Path:
         try:
@@ -71,3 +82,25 @@ class ProjectRegistry:
         if data is None:
             raise NotFound(f"Proyecto no encontrado: {name}")
         return Project(name=name, root=data.get("root", ""))
+
+    def browse(self, path: str | None = None) -> dict[str, Any]:
+        """Lista el contenido de una carpeta permitida (para elegir un proyecto).
+
+        No lee archivos: solo devuelve subcarpetas y nombres de fichero.
+        """
+        raw = path or str(self._s.projects_dir)
+        root = self._validated_root(raw)
+        try:
+            entries = list(root.iterdir())
+        except OSError as exc:
+            raise InvalidConfig(f"No se pudo leer la carpeta: {root} ({exc})") from exc
+        dirs = sorted(p.name for p in entries if p.is_dir() and not p.name.startswith("."))
+        files = sorted(p.name for p in entries if p.is_file() and not p.name.startswith("."))
+        parent = str(root.parent) if root.parent != root else None
+        return {
+            "path": str(root),
+            "parent": parent,
+            "dirs": dirs,
+            "files": files,
+            "roots": self.import_roots(),
+        }

@@ -43,6 +43,8 @@ class Runtime:
     async def start(self) -> None:
         configure_logging(self.settings.log_level)
         self.settings.validate_for_runtime()
+        # el workspace de proyectos siempre existe (ahí se crean los proyectos)
+        self.settings.projects_dir.mkdir(parents=True, exist_ok=True)
         load_plugins()
         await self.memory.start()
         self.factory = AgentFactory(

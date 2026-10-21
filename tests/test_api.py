@@ -74,3 +74,21 @@ def test_cancel_without_running_stream_is_false(client):
 
 def test_cancel_rejects_invalid_thread_id(client):
     assert client.post("/api/v1/chat/cancel", json={"thread_id": "mal id!"}, headers=H).status_code == 422
+
+
+def test_projects_browse_lists_folders_and_roots(client):
+    data = client.get("/api/v1/projects/browse", headers=H).json()
+    assert "dirs" in data and "files" in data and "roots" in data
+    assert any(root for root in data["roots"])
+
+
+def test_projects_browse_outside_allowed_roots_is_forbidden(client):
+    resp = client.get("/api/v1/projects/browse?path=/etc", headers=H)
+    assert resp.status_code == 403
+    assert "raíces permitidas" in resp.json()["detail"]
+
+
+def test_server_config_exposes_project_roots(client):
+    data = client.get("/api/v1/config", headers=H).json()
+    assert data["projects_dir"]
+    assert isinstance(data["projects_import_roots"], list)

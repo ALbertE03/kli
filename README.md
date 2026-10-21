@@ -40,17 +40,28 @@ docker compose up --build      # API en http://127.0.0.1:8000
 | `./workspace` → `/app/workspace` | workspace por defecto del agente |
 | `./projects` → `/app/projects` | proyectos (sandbox por carpeta) |
 | `./src` → `/app/src` | el código, para develops en caliente |
-| `./README.md` → `/app/README.md` | requerido por el build del paquete |
+| `$HOME` → `/host` | tu home del host, para importar carpetas existentes |
 
-El `.env` se carga con `env_file` (claves, modelo, backends). Para importar
-carpetas del host, descomenta el volumen de ejemplo y añade la ruta a
-`PROJECTS_IMPORT_ROOTS`.
+El `.env` se carga con `env_file` (claves, modelo, backends). Ojo: el formato de
+`env_file` de Docker **no admite comentarios en línea**, así que en el `.env`
+pon los comentarios en su propia línea (si no, el valor llega con el comentario
+dentro y rompe la configuración). Para importar carpetas del host, descomenta el
+volumen de ejemplo y añade la ruta a `PROJECTS_IMPORT_ROOTS`.
 
 El TUI también corre dentro del contenedor:
 
 ```bash
-docker compose run --rm cli        # abre KLI contra la API del compose
+docker compose run --rm cli          # abre KLI contra la API del compose
+docker compose run --rm cli --help   # opciones del CLI
 ```
+
+### Dónde se ve cada cosa
+
+| cosa | dónde |
+|---|---|
+| **Swagger / OpenAPI** | <http://localhost:8000/docs> (interactivo) · `/redoc` · `/openapi.json` |
+| **API** | <http://localhost:8000> (JSON + SSE) |
+| **El CLI** | **es de terminal, no web**: se ve en tu terminal. `make cli` o `docker compose run --rm cli` |
 
 Variables del cliente (en el host o dentro del contenedor):
 
@@ -59,6 +70,8 @@ Variables del cliente (en el host o dentro del contenedor):
 | `KLI_API_URL` | `http://127.0.0.1:8000` | servidor al que conectarse |
 | `KLI_USER` | `anonymous` | cabecera `X-User-Id` |
 | `KLI_API_KEY` | — | `Authorization: Bearer` si el server exige `API_KEYS` |
+
+También por línea de comandos: `kliccode --url http://servidor:8000 --user ana`.
 
 ## El CLI
 
@@ -105,19 +118,87 @@ Variables del cliente (en el host o dentro del contenedor):
 
 ### Comandos
 
-| comando | qué hace |
+El CLI es un cliente completo de la API: **todo lo que hace la API se hace desde
+aquí**, y cada mensaje indica el endpoint que se está usando.
+
+**Conversación**
+
+| comando | endpoint |
 |---|---|
-| `/help` | ayuda |
-| `/mode <plan\|build>` | cambia el modo de trabajo |
-| `/skill <nombre>` | activa o desactiva una skill |
-| `/skills` | lista las skills |
-| `/model <modelo>` | fija el modelo (`auto` para el de por defecto) |
-| `/provider <nombre>` | cambia de proveedor |
-| `/project <nombre\|none>` | fija el proyecto activo |
-| `/projects` | lista los proyectos |
-| `/tools` | lista las herramientas por categoría |
-| `/threads` | lista los hilos guardados |
-| `/new` · `/clear` · `/quit` | hilo nuevo · limpiar · salir |
+| `/mode <plan\|build>` | `POST /api/v1/chat/stream` (`mode`) |
+| `/model <modelo\|auto>` | `POST /api/v1/chat/stream` (`model`) |
+| `/provider <nombre>` | `POST /api/v1/chat/stream` (`provider`) |
+| `/skill <nombre>` | `POST /api/v1/chat/stream` (`skills`) |
+| `/project <nombre\|none>` | `POST /api/v1/chat/stream` (`project`) |
+| `/new` · `/clear` · `/quit` | — |
+
+**Proyectos** (el workspace del agente)
+
+| comando | endpoint |
+|---|---|
+| `/projects` | `GET /api/v1/registry` |
+| `/project create <nombre>` | `POST /api/v1/projects` → carpeta **nueva** en el workspace del servidor |
+| `/project import <nombre> <ruta>` | `POST /api/v1/projects` → usa una carpeta **existente tal cual** |
+| `/project browse [ruta]` | `GET /api/v1/projects/browse` → lista carpetas para elegir |
+| `/project <nombre>` | activa el proyecto para el chat |
+| `/project delete <nombre>` | `DELETE /api/v1/projects/{nombre}` |
+
+Ejemplo real (carpeta del host `~/mi-repo` con `src/`, `docs/` y `README.md`):
+
+```
+/project browse /host                      → lista tus carpetas
+/project import mi_repo /host/mi-repo      → esa carpeta ES el workspace del proyecto
+/project mi_repo                           → el agente trabaja dentro de ella
+```
+
+Al importar, el proyecto apunta a la carpeta original (no se copia nada): las
+tools `fs_*` quedan encerradas ahí, así que el agente **lee y escribe en tus
+ficheros reales**. Solo se pueden importar carpetas dentro de
+`PROJECTS_IMPORT_ROOTS` (el CLI te las muestra en `/projects` y en el error si
+la ruta está fuera).
+
+En Docker tu `$HOME` queda montada en `/host`, así que cualquier carpeta tuya se
+importa con `/project import <nombre> /host/ruta/a/la/carpeta`. Para montar otra
+raíz: `KLI_HOST_DIR=/ruta/que/quieras docker compose up`.
+
+**Skills**
+
+| comando | endpoint |
+|---|---|
+| `/skills` | `GET /api/v1/registry` |
+| `/skill create <nombre> "<desc>" "<instrucciones>" [--tools a,b]` | `POST /api/v1/skills` |
+| `/skill delete <nombre>` | `DELETE /api/v1/skills/{nombre}` |
+
+**Proveedores y modelos**
+
+| comando | endpoint |
+|---|---|
+| `/providers` | `GET /api/v1/registry` |
+| `/provider create <nombre> <openai\|anthropic> [url] [modelo] [clave]` | `POST /api/v1/providers` |
+| `/provider delete <nombre>` | `DELETE /api/v1/providers/{nombre}` |
+| `/models [proveedor]` | `GET /api/v1/models?provider=` |
+
+**Herramientas propias**
+
+| comando | endpoint |
+|---|---|
+| `/tools` | `GET /api/v1/registry` |
+| `/http` | `GET /api/v1/tools/http` |
+| `/http add <nombre> "<desc>" <url> [host]` | `POST /api/v1/tools/http` |
+| `/http delete <nombre>` | `DELETE /api/v1/tools/http/{nombre}` |
+| `/mcp` | `GET /api/v1/mcp` |
+| `/mcp add <nombre> <url>` | `POST /api/v1/mcp` |
+| `/mcp delete <nombre>` | `DELETE /api/v1/mcp/{nombre}` |
+
+**Memoria e hilos**
+
+| comando | endpoint |
+|---|---|
+| `/memories` | `GET /api/v1/memories` |
+| `/memory delete <clave>` | `DELETE /api/v1/memories/{clave}` |
+| `/threads` | `GET /api/v1/threads` |
+| `/thread open <id>` | `GET /api/v1/threads/{id}/messages` |
+| `/thread delete <id>` | `DELETE /api/v1/threads/{id}` |
 
 ## API
 
@@ -157,6 +238,8 @@ Lo imprescindible:
 | variable | para qué |
 |---|---|
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | credenciales del proveedor |
+| `OPENAI_MODEL` / `ANTHROPIC_MODEL` | modelo por defecto (p. ej. `gpt-6-luna`) |
+| `TEMPERATURE` | vacío = **no mandarlo** (gpt-6-luna y otros modelos lo rechazan) |
 | `SECRET_KEY` | clave Fernet (32 bytes url-safe base64) para cifrar lo que se guarda. Genera una con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CHECKPOINT_BACKEND` · `STORE_BACKEND` | `memory` \| `sqlite` \| `postgres` |
 | `ENABLE_EXEC` | habilita `terminal`, `python_repl` y `run_tests` (aprobación humana) |

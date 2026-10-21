@@ -21,34 +21,27 @@ def _build(
     base_url: str | None,
     api_key: str | None,
     model: str,
-    temperature: float,
+    temperature: float | None,
     timeout: float,
     retries: int,
     max_tokens: int,
     stream_usage: bool,
 ) -> BaseChatModel:
     key = api_key or "not-needed"  # proxies locales sin autenticación
+    # algunos modelos (gpt-6-luna, o1…) no aceptan `temperature`: si es None no se manda
+    common: dict[str, object] = {
+        "model": model,
+        "base_url": base_url,
+        "api_key": key,
+        "timeout": timeout,
+        "max_retries": retries,
+        "streaming": True,
+    }
+    if temperature is not None:
+        common["temperature"] = temperature
     if kind == "openai":
-        return ChatOpenAI(
-            model=model,
-            base_url=base_url,
-            api_key=key,
-            temperature=temperature,
-            timeout=timeout,
-            max_retries=retries,
-            streaming=True,
-            stream_usage=stream_usage,
-        )
-    return ChatAnthropic(
-        model=model,
-        base_url=base_url,
-        api_key=key,
-        temperature=temperature,
-        timeout=timeout,
-        max_retries=retries,
-        max_tokens=max_tokens,
-        streaming=True,
-    )
+        return ChatOpenAI(stream_usage=stream_usage, **common)  # type: ignore[arg-type]
+    return ChatAnthropic(max_tokens=max_tokens, **common)  # type: ignore[arg-type]
 
 
 def build_chat_model(rp: ResolvedProvider) -> BaseChatModel:

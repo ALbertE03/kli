@@ -4,10 +4,10 @@
 sin `path` se crea `projects/<name>`. El registro no borra nunca archivos del disco.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from api.deps import Rt, User
-from api.schemas import ProjectIn
+from api.schemas import ProjectBrowseOut, ProjectIn
 from harness.types import Project
 
 router = APIRouter(tags=["projects"])
@@ -16,6 +16,21 @@ router = APIRouter(tags=["projects"])
 @router.get("/projects", response_model=list[Project])
 async def list_projects(user: User, rt: Rt) -> list[Project]:
     return rt.list_projects(user)
+
+
+@router.get("/projects/browse", response_model=ProjectBrowseOut)
+async def browse_projects(
+    user: User,
+    rt: Rt,
+    path: str | None = Query(default=None, max_length=1024),
+) -> ProjectBrowseOut:
+    """Lista las carpetas de una raíz permitida, para elegir qué importar.
+
+    Solo devuelve nombres (nunca contenido de ficheros) y solo dentro de las
+    raíces permitidas (`PROJECTS_IMPORT_ROOTS`).
+    """
+    data = rt.projects.browse(path)
+    return ProjectBrowseOut(**data)
 
 
 @router.post("/projects", status_code=201, response_model=Project)

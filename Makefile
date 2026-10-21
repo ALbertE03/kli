@@ -14,7 +14,7 @@ typecheck:
 docker-build:
 	docker compose build
 docker-up:
-	docker compose up --build
+	docker compose up 
 docker-down:
 	docker compose down
 docker-cli:

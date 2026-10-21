@@ -8,7 +8,8 @@ services:
       WORKSPACE_DIR: /app/workspace
       PROJECTS_DIR: /app/projects
       # Desde aquí se pueden importar carpetas existentes del host
-      PROJECTS_IMPORT_ROOTS: /import
+      # (monta la carpeta que quieras usar en /import o en /host, ver volúmenes)
+      PROJECTS_IMPORT_ROOTS: /import,/app/workspace,/host
       # Sin proveedores locales hardcodeados: openai y anthropic son built-in y los
       # demás (ej. freellmapi) se registran por API contra host.docker.internal:
       #   POST /api/v1/providers  {"name":"freellmapi","kind":"openai",
@@ -26,7 +27,11 @@ services:
       # el código en vivo: edita src/ y recarga con `make dev` o reinicia el compose
       - ./src:/app/src
       - ./README.md:/app/README.md:ro
-      # para importar carpetas del host (PROJECTS_IMPORT_ROOTS debe incluirlas):
+      # tu HOME del host montada en /host: así puedes importar cualquier carpeta
+      # que tengas con `/project import <nombre> /host/mis-repos`
+      # (cámbialo con KLI_HOST_DIR=/ruta/que/quieras docker compose up)
+      - ${KLI_HOST_DIR:-${HOME}}:/host
+      # para importar carpetas concretas en /import:
       # - ~/mis-repos:/import/mis-repos
     stdin_open: true
     tty: true
@@ -37,7 +42,8 @@ services:
   cli:
     build: .
     profiles: ["cli"]
-    command: ["kliccode"]
+    entrypoint: ["kliccode"]
+    command: []
     environment:
       KLI_API_URL: http://api:8000
       KLI_USER: ${KLI_USER:-anonymous}
@@ -48,5 +54,6 @@ services:
       - ./workspace:/app/workspace
       - ./projects:/app/projects
       - ./src:/app/src
+      - ${KLI_HOST_DIR:-${HOME}}:/host
     stdin_open: true
     tty: true

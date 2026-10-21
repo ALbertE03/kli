@@ -4,7 +4,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Provider = Literal["openai", "anthropic"]
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     openai_stream_usage: bool = False
     anthropic_model: str = "claude-sonnet-5-5"
     anthropic_api_key: SecretStr | None = None
-    temperature: float = 0.2
+    temperature: float | None = 0.2  # None = no mandarlo (modelos que no lo admiten)
     request_timeout: float = 120.0
     max_retries: int = 2
     max_output_tokens: int = 8192
@@ -57,6 +57,22 @@ class Settings(BaseSettings):
     recursion_limit: int = 100
     agent_cache_size: int = 32
     max_custom_per_user: int = 50
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def _blank_temperature(cls, value: object) -> object:
+        """TEMPERATURE vacío = no mandar el parámetro (modelos que no lo admiten)."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("mcp_config_file", mode="before")
+    @classmethod
+    def _blank_mcp_config(cls, value: object) -> object:
+        """MCP_CONFIG_FILE vacío = sin fichero de configuración."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     @property
     def api_key_map(self) -> dict[str, str]:

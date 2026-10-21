@@ -39,6 +39,16 @@ class ProjectIn(BaseModel):
     path: str | None = Field(default=None, max_length=1024)
 
 
+class ProjectBrowseOut(BaseModel):
+    """Contenido de una carpeta permitida (para elegir qué importar)."""
+
+    path: str
+    parent: str | None = None
+    dirs: list[str] = []
+    files: list[str] = []
+    roots: list[str] = []
+
+
 class ChatRequest(AgentConfigIn):
     message: str = Field(min_length=1, max_length=32000)
     thread_id: str | None = Field(default=None, pattern=THREAD_PATTERN)
@@ -63,6 +73,9 @@ class ServerConfigOut(BaseModel):
     enable_exec: bool
     recursion_limit: int
     max_custom_per_user: int
+    # dónde se crean los proyectos y desde dónde se pueden importar carpetas
+    projects_dir: str
+    projects_import_roots: list[str] = []
 
 
 class ThreadOut(BaseModel):

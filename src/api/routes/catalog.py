@@ -22,6 +22,8 @@ async def server_config(user: User, rt: Rt) -> ServerConfigOut:
         enable_exec=settings.enable_exec,
         recursion_limit=settings.recursion_limit,
         max_custom_per_user=settings.max_custom_per_user,
+        projects_dir=str(settings.projects_dir),
+        projects_import_roots=rt.projects.import_roots(),
     )
 
 
