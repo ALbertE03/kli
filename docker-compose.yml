@@ -1,0 +1,24 @@
+services:
+  api:
+    build: .
+    env_file: .env
+    environment:
+      # Rutas internas del contenedor (si tu .env usa ./data, etc., aquí se ajustan)
+      DATA_DIR: /app/data
+      WORKSPACE_DIR: /app/workspace
+      PROJECTS_DIR: /app/projects
+      # Sin proveedores locales hardcodeados: openai y anthropic son built-in y los
+      # demás (ej. freellmapi) se registran por API contra host.docker.internal:
+      #   POST /api/v1/providers  {"name":"freellmapi","kind":"openai",
+      #                            "base_url":"http://host.docker.internal:31415/v1"}
+      # Si prefieres fijarlos por entorno, usa OPENAI_BASE_URL en .env.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./workspace:/app/workspace
+      - ./projects:/app/projects
+      # Para importar carpetas del host (PROJECTS_IMPORT_ROOTS debe incluirlas):
+      # - ~/mis-repos:/import/mis-repos

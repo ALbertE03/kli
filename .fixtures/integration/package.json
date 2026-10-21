@@ -1,8 +1,0 @@
-{
-  "name": "kli-integration-fixture",
-  "private": true,
-  "type": "module",
-  "devDependencies": {
-    "@types/node": "^20.19.43"
-  }
-}
