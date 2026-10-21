@@ -13,7 +13,7 @@ def test_prompt_includes_mode_and_skill_and_sanitizes():
 
 def test_prompt_keeps_volatile_date_last_for_caching():
     mode = Mode(name="plan", description="d", instructions="mode text", categories=frozenset({ToolCategory.READ}))
-    skill = Skill(name="s", description="d", instructions="skill text")
+    skill = Skill(name="skill", description="descripcion", instructions="skill text")
     prompt = build_system_prompt(mode, [skill])
     assert prompt.startswith(BASE_IDENTITY)
     # el prefijo estable va primero; la fecha (volátil) al final

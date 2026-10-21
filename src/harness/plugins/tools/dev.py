@@ -19,6 +19,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from langchain_core.tools import BaseTool, tool
+from pydantic import BaseModel, Field
 
 from harness.config import get_settings
 from harness.plugins.tools.codigo import WORKSPACE
@@ -37,6 +38,19 @@ IGNORE_DIRS = frozenset(
     }
 )
 _MAX_FILE_BYTES = 512 * 1024
+
+
+class _RunTestsInput(BaseModel):
+    """Entrada de `run_tests`.
+
+    Se define a mano porque langchain reserva el nombre `args` al derivar el
+    schema de la firma: sin este modelo el parámetro llega como `v__args`.
+    """
+
+    args: str = Field(
+        default="-q",
+        description="Argumentos extra para pytest (p. ej. '-q -k nombre').",
+    )
 
 
 def _inside(root: Path, relative: str) -> Path | None:
@@ -175,8 +189,9 @@ def make_dev_tools(root: str) -> dict[str, BaseTool]:
                     walk(child, depth + 1)
                 elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     kind = "async def" if isinstance(child, ast.AsyncFunctionDef) else "def"
+                    returns = f" -> {ast.unparse(child.returns)}" if child.returns else ""
                     rows.append(
-                        f"{pad}{kind} {child.name}({ast.unparse(child.args)})  # L{child.lineno}"
+                        f"{pad}{kind} {child.name}({ast.unparse(child.args)}){returns}  # L{child.lineno}"
                     )
                     walk(child, depth + 1)
 
@@ -205,7 +220,7 @@ def make_dev_tools(root: str) -> dict[str, BaseTool]:
         """Últimos `n` commits (1-50): hash, fecha, autor y mensaje."""
         return _git(base, "log", f"-n{min(max(n, 1), 50)}", "--pretty=format:%h %ad %an %s", "--date=short")
 
-    @tool("run_tests")
+    @tool("run_tests", args_schema=_RunTestsInput)
     def run_tests(args: str = "-q") -> str:
         """Ejecuta la suite de tests (pytest) en la raíz del proyecto y devuelve el
         resumen. Requiere ENABLE_EXEC=true y aprobación humana: los tests ejecutan
