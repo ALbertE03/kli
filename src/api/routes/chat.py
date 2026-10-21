@@ -1,5 +1,7 @@
+import asyncio
 import logging
 import uuid
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -7,14 +9,28 @@ from langchain_core.messages import HumanMessage
 from langgraph.types import Command
 
 from api.deps import Rt, User
-from api.schemas import AgentConfigIn, ChatRequest, ResumeRequest
+from api.schemas import AgentConfigIn, CancelRequest, ChatRequest, ResumeRequest
 from api.sse import sse_response
 from harness.errors import Conflict, NotFound
 from harness.kernel import AgentRequest
-from harness.streaming import stream_run
+from harness.streaming import StreamEvent, stream_run
 
 router = APIRouter(tags=["chat"])
 log = logging.getLogger(__name__)
+
+
+async def _tracked(
+    rt: Rt, key: str, events: AsyncIterator[StreamEvent]
+) -> AsyncIterator[StreamEvent]:
+    """Registra la task que emite el stream para poder cancelarla desde la API."""
+    task = asyncio.current_task()
+    if task is not None:
+        rt.register_run(key, task)
+    try:
+        async for ev in events:
+            yield ev
+    finally:
+        rt.unregister_run(key)
 
 
 def _resolve_project(rt: Rt, user: str, requested: str | None, thread: str) -> str | None:
@@ -53,12 +69,16 @@ async def chat_stream(req: ChatRequest, user: User, rt: Rt) -> StreamingResponse
     agent = rt.factory.get(_agent_request(user, req, project))  # errores -> HTTP antes del stream
     rt.storage.touch_thread(user, thread, req.message, req.mode, project)
 
-    events = stream_run(
-        agent,
-        {"messages": [HumanMessage(content=req.message)]},
-        thread_id=key,
-        user_id=user,
-        recursion_limit=rt.settings.recursion_limit,
+    events = _tracked(
+        rt,
+        key,
+        stream_run(
+            agent,
+            {"messages": [HumanMessage(content=req.message)]},
+            thread_id=key,
+            user_id=user,
+            recursion_limit=rt.settings.recursion_limit,
+        ),
     )
     return sse_response(events, {"thread_id": thread}, lock)
 
@@ -75,11 +95,26 @@ async def chat_resume(req: ResumeRequest, user: User, rt: Rt) -> StreamingRespon
 
     project = _resolve_project(rt, user, req.project, req.thread_id)
     agent = rt.factory.get(_agent_request(user, req, project))
-    events = stream_run(
-        agent,
-        Command(resume=req.resume),
-        thread_id=key,
-        user_id=user,
-        recursion_limit=rt.settings.recursion_limit,
+    events = _tracked(
+        rt,
+        key,
+        stream_run(
+            agent,
+            Command(resume=req.resume),
+            thread_id=key,
+            user_id=user,
+            recursion_limit=rt.settings.recursion_limit,
+        ),
     )
     return sse_response(events, {"thread_id": req.thread_id}, lock)
+
+
+@router.post("/chat/cancel")
+async def chat_cancel(req: CancelRequest, user: User, rt: Rt) -> dict[str, bool]:
+    """Corta la generación en curso de un hilo.
+
+    La task que emite el SSE se cancela: el stream termina de inmediato y el
+    hilo queda listo para la siguiente vuelta. `cancelled=False` si no había
+    ninguna ejecución en curso.
+    """
+    return {"cancelled": rt.cancel_run(f"{user}:{req.thread_id}")}

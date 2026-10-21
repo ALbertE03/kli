@@ -56,3 +56,21 @@ def test_http_tool_to_private_host_is_blocked(client):
         "allowed_hosts": ["127.0.0.1"],
     }
     assert client.post("/api/v1/tools/http", json=body, headers=H).status_code == 403
+
+
+def test_server_config_exposes_capabilities(client):
+    data = client.get("/api/v1/config", headers=H).json()
+    assert data["version"]
+    assert data["default_provider"] in {"openai", "anthropic"}
+    assert data["default_model"]
+    assert isinstance(data["enable_exec"], bool)
+
+
+def test_cancel_without_running_stream_is_false(client):
+    resp = client.post("/api/v1/chat/cancel", json={"thread_id": "no_existe"}, headers=H)
+    assert resp.status_code == 200
+    assert resp.json() == {"cancelled": False}
+
+
+def test_cancel_rejects_invalid_thread_id(client):
+    assert client.post("/api/v1/chat/cancel", json={"thread_id": "mal id!"}, headers=H).status_code == 422

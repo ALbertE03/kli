@@ -37,6 +37,8 @@ class Runtime:
         self.projects = ProjectRegistry(settings, self.storage)
         self.factory: AgentFactory
         self._locks: dict[str, asyncio.Lock] = {}
+        # task que emite el stream de cada hilo en curso (para poder cancelarla)
+        self._runs: dict[str, asyncio.Task[Any]] = {}
 
     async def start(self) -> None:
         configure_logging(self.settings.log_level)
@@ -58,6 +60,22 @@ class Runtime:
     def lock_for(self, key: str) -> asyncio.Lock:
         """Un lock por hilo evita dos ejecuciones simultáneas sobre el mismo estado."""
         return self._locks.setdefault(key, asyncio.Lock())
+
+    # ------------- control de ejecuciones -------------
+    def register_run(self, key: str, task: asyncio.Task[Any]) -> None:
+        """Guarda la task que emite el stream de un hilo (para poder cancelarla)."""
+        self._runs[key] = task
+
+    def unregister_run(self, key: str) -> None:
+        self._runs.pop(key, None)
+
+    def cancel_run(self, key: str) -> bool:
+        """Corta el stream en curso de un hilo. True si había algo que cortar."""
+        task = self._runs.get(key)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        return True
 
     # ------------- arranque -------------
     async def _load_global_mcp(self) -> None:
@@ -204,4 +222,4 @@ class Runtime:
         return self.projects.get(owner, name)
 
 
-__all__ = ["Runtime", "HarnessError"]
+__all__ = ["HarnessError", "Runtime"]

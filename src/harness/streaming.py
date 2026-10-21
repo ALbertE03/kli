@@ -121,7 +121,7 @@ async def _pending_interrupts(agent: Any, config: dict[str, Any]) -> list[Any]:
     try:
         snapshot = await agent.aget_state(config)
         return [i.value for task in snapshot.tasks for i in getattr(task, "interrupts", ())]
-    except Exception:  # noqa: BLE001 - consultar interrupciones nunca debe romper el stream
+    except Exception:  # consultar interrupciones nunca debe romper el stream
         log.debug("No se pudo leer el estado para interrupciones", exc_info=True)
         return []
 
@@ -146,6 +146,6 @@ async def stream_run(
         interrupts = await _pending_interrupts(agent, config)
         if interrupts:
             yield StreamEvent(type="interrupt", payload=json_safe(interrupts))
-    except Exception as exc:  # noqa: BLE001 - el stream siempre termina con un evento claro
+    except Exception as exc:  # el stream siempre termina con un evento claro
         log.exception("Error durante la ejecución del agente")
         yield StreamEvent(type="error", text=f"{type(exc).__name__}: {clip(str(exc), 500)}")

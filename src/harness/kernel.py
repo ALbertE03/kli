@@ -13,8 +13,8 @@ from harness.memory import MemoryRuntime
 from harness.models import build_chat_model
 from harness.plugins.tools.codigo import make_fs_tools
 from harness.plugins.tools.dev import make_dev_tools
-from harness.prompts import build_system_prompt
 from harness.projects import ProjectRegistry
+from harness.prompts import build_system_prompt
 from harness.providers import ProviderRegistry
 from harness.registry import Registry
 from harness.types import SubAgentSpec
@@ -94,7 +94,9 @@ def _caching_middleware(kind: str) -> list[Any]:
     """Caching del lado del proveedor: Anthropic necesita breakpoints explícitos."""
     if kind != "anthropic":
         return []  # OpenAI cachea prefijos automáticamente en el servidor
-    from langchain_anthropic.middleware.prompt_caching import AnthropicPromptCachingMiddleware
+    from langchain_anthropic.middleware.prompt_caching import (
+        AnthropicPromptCachingMiddleware,
+    )
 
     return [AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")]
 

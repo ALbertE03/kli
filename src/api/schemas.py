@@ -50,6 +50,21 @@ class ResumeRequest(AgentConfigIn):
     resume: Any
 
 
+class CancelRequest(BaseModel):
+    thread_id: str = Field(pattern=THREAD_PATTERN)
+
+
+class ServerConfigOut(BaseModel):
+    """Capacidades del servidor (banner y ajustes del CLI)."""
+
+    version: str
+    default_provider: str
+    default_model: str
+    enable_exec: bool
+    recursion_limit: int
+    max_custom_per_user: int
+
+
 class ThreadOut(BaseModel):
     thread_id: str
     title: str
@@ -92,7 +107,20 @@ class RegistryOut(BaseModel):
 
 
 __all__ = [
-    "AgentConfigIn", "ChatRequest", "ResumeRequest", "ThreadOut", "MessageOut",
-    "ModeOut", "SkillOut", "RegistryOut", "SkillBase", "ProviderIn", "ProviderOut",
-    "ProjectIn", "Project", "ModelListOut",
+    "AgentConfigIn",
+    "CancelRequest",
+    "ChatRequest",
+    "MessageOut",
+    "ModeOut",
+    "ModelListOut",
+    "Project",
+    "ProjectIn",
+    "ProviderIn",
+    "ProviderOut",
+    "RegistryOut",
+    "ResumeRequest",
+    "ServerConfigOut",
+    "SkillBase",
+    "SkillOut",
+    "ThreadOut",
 ]

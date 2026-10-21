@@ -1,11 +1,28 @@
 from fastapi import APIRouter
 
 from api.deps import Rt, User
-from api.schemas import ModeOut, RegistryOut, SkillOut
+from api.schemas import ModeOut, RegistryOut, ServerConfigOut, SkillOut
+from harness import __version__
 from harness.errors import NotFound
 from harness.memory import MemoryItem
 
 router = APIRouter(tags=["catalog"])
+
+
+@router.get("/config", response_model=ServerConfigOut)
+async def server_config(user: User, rt: Rt) -> ServerConfigOut:
+    """Capacidades del servidor: versión, proveedor/modelo por defecto y límites."""
+    settings = rt.settings
+    provider = settings.default_provider
+    model = settings.anthropic_model if provider == "anthropic" else settings.openai_model
+    return ServerConfigOut(
+        version=__version__,
+        default_provider=provider,
+        default_model=model,
+        enable_exec=settings.enable_exec,
+        recursion_limit=settings.recursion_limit,
+        max_custom_per_user=settings.max_custom_per_user,
+    )
 
 
 @router.get("/registry", response_model=RegistryOut)

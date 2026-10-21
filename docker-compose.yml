@@ -7,6 +7,8 @@ services:
       DATA_DIR: /app/data
       WORKSPACE_DIR: /app/workspace
       PROJECTS_DIR: /app/projects
+      # Desde aquí se pueden importar carpetas existentes del host
+      PROJECTS_IMPORT_ROOTS: /import
       # Sin proveedores locales hardcodeados: openai y anthropic son built-in y los
       # demás (ej. freellmapi) se registran por API contra host.docker.internal:
       #   POST /api/v1/providers  {"name":"freellmapi","kind":"openai",
@@ -17,8 +19,34 @@ services:
     ports:
       - "8000:8000"
     volumes:
+      # TODO lo que hace el harness queda en el host, no dentro del contenedor
       - ./data:/app/data
       - ./workspace:/app/workspace
       - ./projects:/app/projects
-      # Para importar carpetas del host (PROJECTS_IMPORT_ROOTS debe incluirlas):
+      # el código en vivo: edita src/ y recarga con `make dev` o reinicia el compose
+      - ./src:/app/src
+      - ./README.md:/app/README.md:ro
+      # para importar carpetas del host (PROJECTS_IMPORT_ROOTS debe incluirlas):
       # - ~/mis-repos:/import/mis-repos
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+
+  # El TUI dentro del contenedor: `docker compose run --rm cli`
+  # (usa el mismo código y los mismos volúmenes que la API)
+  cli:
+    build: .
+    profiles: ["cli"]
+    command: ["kliccode"]
+    environment:
+      KLI_API_URL: http://api:8000
+      KLI_USER: ${KLI_USER:-anonymous}
+    depends_on:
+      - api
+    volumes:
+      - ./data:/app/data
+      - ./workspace:/app/workspace
+      - ./projects:/app/projects
+      - ./src:/app/src
+    stdin_open: true
+    tty: true

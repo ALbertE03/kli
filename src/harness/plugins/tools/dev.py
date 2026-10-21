@@ -82,7 +82,7 @@ def _git(root: Path, *args: str, timeout: int = 30) -> str:
         return "git no está instalado en el servidor."
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=root, capture_output=True, text=True, timeout=timeout
+            ["git", *args], cwd=root, capture_output=True, text=True, timeout=timeout, check=False
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"git falló: {exc}"
@@ -184,7 +184,11 @@ def make_dev_tools(root: str) -> dict[str, BaseTool]:
             for child in ast.iter_child_nodes(node):
                 pad = "  " * depth
                 if isinstance(child, ast.ClassDef):
-                    bases = f"({ast.unparse(child.bases)})" if child.bases else ""
+                    bases = (
+                        f"({', '.join(ast.unparse(b) for b in child.bases)})"
+                        if child.bases
+                        else ""
+                    )
                     rows.append(f"{pad}class {child.name}{bases}  # L{child.lineno}")
                     walk(child, depth + 1)
                 elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -227,7 +231,7 @@ def make_dev_tools(root: str) -> dict[str, BaseTool]:
         código real del proyecto."""
         cmd = [sys.executable, "-m", "pytest", *shlex.split(args)]
         try:
-            proc = subprocess.run(cmd, cwd=base, capture_output=True, text=True, timeout=300)
+            proc = subprocess.run(cmd, cwd=base, capture_output=True, text=True, timeout=300, check=False)
         except subprocess.TimeoutExpired:
             return "Tests abortados: timeout de 300 s."
         except OSError as exc:

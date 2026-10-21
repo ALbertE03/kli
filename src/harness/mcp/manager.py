@@ -13,9 +13,18 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import TypeAdapter
 
 from harness.errors import Conflict, Forbidden, InvalidConfig, NotFound
-from harness.mcp.types import HttpServerConfig, MCPServerConfig, MCPServerInfo, StdioServerConfig
+from harness.mcp.types import (
+    HttpServerConfig,
+    MCPServerConfig,
+    MCPServerInfo,
+    StdioServerConfig,
+)
 from harness.registry import Registry
-from harness.security import aassert_public_url, validate_headers, validate_stdio_command
+from harness.security import (
+    aassert_public_url,
+    validate_headers,
+    validate_stdio_command,
+)
 
 log = logging.getLogger(__name__)
 _config_adapter: TypeAdapter[Any] = TypeAdapter(MCPServerConfig)
@@ -66,7 +75,7 @@ class MCPManager:
         client = MultiServerMCPClient({cfg.name: _connection(cfg)})
         try:
             tools = await asyncio.wait_for(client.get_tools(), timeout=30)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # se re-lanza como InvalidConfig
             raise InvalidConfig(f"No se pudo conectar a '{cfg.name}': {exc}") from exc
 
         registered: list[str] = []

@@ -11,3 +11,9 @@ wheels/
 *.lock
 .env
 .DS_Store
+# previews generados
+kli-preview.svg
+# datos locales del runtime
+data/
+workspace/
+projects/

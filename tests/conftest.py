@@ -14,5 +14,7 @@ os.environ.update(
         "HARNESS_ENV": "dev",
         "ENABLE_EXEC": "false",
         "MCP_CONFIG_FILE": "",
+        # clave Fernet de pruebas: el .env local puede traer otra (o ninguna)
+        "SECRET_KEY": "x6hd-OGd0dHp-_p98jYkJP8GFTHM_aY5tneXL7RcxxM=",
     }
 )
