@@ -1,0 +1,58 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.venv
+venv
+env
+*.egg-info
+dist
+build
+wheels
+
+# IDE / Editor
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Env files (secrets!)
+.env
+.env.*
+!.env.example
+
+# Local data (mounted at runtime via compose)
+data/
+workspace/
+projects/
+
+# Tests
+tests/
+htmlcov/
+.coverage
+
+# Docs / Misc
+*.md
+!README.md
+*.svg
+*.png
+*.jpg
+*.jpeg
+*.gif
+Makefile
+AGENTS.md
+
+# Docker
+.dockerignore
+Dockerfile*
+docker-compose*.yml
+
