@@ -1,5 +1,5 @@
 [project]
-name = "kliccode"
+name = "klicode"
 version = "0.1.0"
 description = "KLI: API y CLI de terminal para el harness agéntico"
 readme = "README.md"
@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.scripts]
-kliccode = "cli.app:main"
+klicode = "cli.app:main"
 
 [build-system]
 requires = ["hatchling"]

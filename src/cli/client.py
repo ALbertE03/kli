@@ -257,6 +257,10 @@ class HarnessClient:
             value = body.get(key)
             if value:
                 payload[key] = value
+        # tools opt-in (búsqueda web): solo se piden si están encendidas
+        opt_in = list(body.get("opt_in") or [])
+        if opt_in:
+            payload["opt_in"] = opt_in
         return payload
 
     async def stream_chat(self, body: dict[str, Any]) -> AsyncIterator[ServerEvent]:

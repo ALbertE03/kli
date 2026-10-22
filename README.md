@@ -1,4 +1,4 @@
-# kliccode · KLI
+# klicode · KLI
 
 Harness agéntico con **API HTTP** (FastAPI) y una **TUI de terminal** (Textual)
 que habla con esa API. El CLI es un cliente puro: no importa el runtime, así que
@@ -23,7 +23,7 @@ puede conectarse a un servidor remoto con `KLI_API_URL`.
 uv sync                 # dependencias (crea .venv)
 cp .env.example .env    # y rellena OPENAI_API_KEY o ANTHROPIC_API_KEY
 make dev                # API en http://127.0.0.1:8000
-make cli                # el TUI (o: uv run kliccode)
+make cli                # el TUI (o: uv run klicode)
 ```
 
 ### Docker (todo montado)
@@ -71,7 +71,7 @@ Variables del cliente (en el host o dentro del contenedor):
 | `KLI_USER` | `anonymous` | cabecera `X-User-Id` |
 | `KLI_API_KEY` | — | `Authorization: Bearer` si el server exige `API_KEYS` |
 
-También por línea de comandos: `kliccode --url http://servidor:8000 --user ana`.
+También por línea de comandos: `klicode --url http://servidor:8000 --user ana`.
 
 El CLI **lee el `.env` del proyecto** (si existe), así que ahí puedes dejar
 `KLI_USER`, `KLI_API_URL` y `KLI_API_KEY` sin repetirlo cada vez.
@@ -79,7 +79,7 @@ El CLI **lee el `.env` del proyecto** (si existe), así que ahí puedes dejar
 ## El CLI
 
 ```
-  ◆ kliccode  agentic harness    ● http://127.0.0.1:8000 · user anonymous · v0.1.0
+  ◆ klicode  agentic harness    ● http://127.0.0.1:8000 · user anonymous · v0.1.0
 ────────────────────────────────────────────────────────────────────────────────────
                                │   chat
                                │────────────────────────────────────────────────────
@@ -104,7 +104,11 @@ El CLI **lee el `.env` del proyecto** (si existe), así que ahí puedes dejar
  HERRAMIENTAS                  │  │❯  Escribe tu mensaje…   (/help)              │
    2  exec:1 · read:1          │  ╰──────────────────────────────────────────────╯
                                │
-● pensando…                                                                  hilo t1
+  ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈    │
+  WEB                           │
+    ○ búsqueda web              │
+                                │
+● pensando…                                                hilo t1   ○ web
 ```
 
 - **Streaming en vivo**: tokens del assistant, razonamiento plegable (`▶`),
@@ -119,7 +123,7 @@ El CLI **lee el `.env` del proyecto** (si existe), así que ahí puedes dejar
 - **El pensamiento se ve siempre**: el razonamiento del modelo llega al
   cliente (los proxies OpenAI-compatible lo mandan en `delta.reasoning_content`)
   y se muestra desplegado, sin cajas ni distractions.
-- **Pantalla de inicio**: el logo `kliccode` en grande, centrado, con una letra
+- **Pantalla de inicio**: el logo `klicode` en grande, centrado, con una letra
   que late; al escribir, el chat empieza limpio.
 - **Aprobaciones**: cuando el agente pide permiso, aparece una tarjeta con la
   tool y sus argumentos → *Aprobar* / *Rechazar* → la ejecución continúa.
@@ -127,7 +131,10 @@ El CLI **lee el `.env` del proyecto** (si existe), así que ahí puedes dejar
   código que devolvió el servidor y **qué hacer** (`401` → credenciales,
   `404` → no existe, `429` → espera, `5xx` → mira los logs).
 - **Contexto lateral**: modo, skills activas, proyecto, modelo, tools por
-  categoría y tokens de la conversación.
+  categoría, estado de la búsqueda web y tokens de la conversación.
+- **Búsqueda web apagada de serie**: `web_search` y `deep_search` no se cargan
+  en el prompt hasta que las pides (`/web` o la pastilla `○ web` de la barra
+  inferior): se ahorran tokens de entrada en cada mensaje.
 - **Paleta de comandos** (`ctrl+p`): modos, skills, proyectos y acciones.
 - **Autocompletado** (`tab`): completa comandos (`/mo` → `/mode`) y sus
   argumentos (`/mode ` → `plan`, `/skill ` → `investigacion`); repetido,
@@ -166,9 +173,46 @@ aquí**, y cada mensaje indica el endpoint que se está usando.
 | `/model <modelo\|auto>` | `POST /api/v1/chat/stream` (`model`) |
 | `/provider <nombre>` | `POST /api/v1/chat/stream` (`provider`) |
 | `/skill <nombre>` | `POST /api/v1/chat/stream` (`skills`) |
+| `/web` | `POST /api/v1/chat/stream` (`opt_in`) |
 | `/project <nombre\|none>` | `POST /api/v1/chat/stream` (`project`) |
 | `/user [nombre]` | cabecera `X-User-Id` |
 | `/new` · `/clear` · `/quit` | — |
+
+**Búsqueda web** (apagada hasta que la pides)
+
+`web_search` y `deep_search` son tools **opt-in**: el servidor no las carga en el
+prompt mientras no las actives, así que sus esquemas no gastan tokens de entrada
+en cada mensaje. Se encienden con `/web on`, con la pastilla `web` de la barra
+inferior (`○` apagada · `●` encendida) o automáticamente al activar una skill
+que las necesita (`investigacion`). El estado se ve también en el panel lateral.
+
+```bash
+/web            → estado y explicación
+/web on         → el chat empieza a mandar opt_in: ["web_search", "deep_search"]
+/web off        → vuelven a quedar fuera del prompt
+```
+
+**Si no ves el razonamiento**
+
+El pensamiento del modelo llega al TUI como un bloque plegable (*razonamiento*).
+Si no aparece, el problema casi nunca es la TUI: es que el proveedor no lo manda.
+El servidor avisa en su log cuando el modelo debía razonar y no dice nada, y
+dice **qué bloques llegaron**:
+
+```
+WARNING  El modelo no ha enviado razonamiento (REASONING_EFFORT=low).
+         Bloques vistos: text. Con el API de Responses debe mandar
+         `response.reasoning_summary_text.delta`; con chat completions,
+         `delta.reasoning_content`.
+```
+
+Según lo que diga el log:
+
+| situation | qué hacer |
+|---|---|
+| `Bloques vistos: text` | el proveedor no manda el razonamiento: usa `REASONING_API=chat` si tu proxy manda `delta.reasoning_content` (DeepSeek, OpenRouter, Ollama…) |
+| `Bloques vistos: reasoning` | el razonamiento llegó, pero sin texto: el resumen viene vacío (el proveedor no lo rellena) |
+| no hay aviso en el log | el razonamiento llegó y se pintó: mira el panel *razonamiento* (puede estar plegado) |
 
 **Proyectos** (el workspace del agente)
 
@@ -279,6 +323,7 @@ Lo imprescindible:
 | `OPENAI_MODEL` / `ANTHROPIC_MODEL` | modelo por defecto (p. ej. `gpt-6-luna`) |
 | `TEMPERATURE` | vacío = **no mandarlo** (gpt-6-luna y otros modelos lo rechazan) |
 | `REASONING_EFFORT` | `low`\|`medium`\|`high`; vacío = no mandarlo. Con valor se usa el API de Responses y el cliente muestra el resumen del pensamiento |
+| `REASONING_API` | `responses`\|`chat`; por dónde se pide el razonamiento. `chat` es para los proxies que no implementan el API de Responses (mandan `delta.reasoning_content`) |
 | `SECRET_KEY` | clave Fernet (32 bytes url-safe base64) para cifrar lo que se guarda. Genera una con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CHECKPOINT_BACKEND` · `STORE_BACKEND` | `memory` \| `sqlite` \| `postgres` |
 | `ENABLE_EXEC` | habilita `terminal`, `python_repl` y `run_tests` (aprobación humana) |
@@ -294,7 +339,7 @@ proyectos de cada usuario). Se cambia de tres maneras:
 
 ```bash
 KLI_USER=tu-usuario make cli      # al arrancar
-kliccode --user tu-usuario        # en la línea de comandos
+klicode --user tu-usuario        # en la línea de comandos
 ```
 
 y en caliente, desde la conversación:

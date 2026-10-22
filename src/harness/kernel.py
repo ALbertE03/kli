@@ -2,6 +2,7 @@
 
 import logging
 from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,7 +18,7 @@ from harness.projects import ProjectRegistry
 from harness.prompts import build_system_prompt
 from harness.providers import ProviderRegistry
 from harness.registry import Registry
-from harness.types import SubAgentSpec
+from harness.types import Mode, Skill, SubAgentSpec
 
 log = logging.getLogger(__name__)
 
@@ -30,15 +31,44 @@ class AgentRequest:
     provider: str | None = None
     model: str | None = None
     project: str | None = None
+    # Tools opt-in que se cargan (p. ej. web_search). Vacío = solo las de siempre.
+    opt_in: tuple[str, ...] = ()
 
     def key(self) -> tuple[Any, ...]:
-        return (self.user_id, self.mode, self.skills, self.provider, self.model, self.project)
+        return (
+            self.user_id,
+            self.mode,
+            self.skills,
+            self.provider,
+            self.model,
+            self.project,
+            self.opt_in,
+        )
 
 
 def _scope_project(tools: list[BaseTool], root: str) -> list[BaseTool]:
     """Sustituye las tools de archivos/código por versiones confinadas a la raíz del proyecto."""
     scoped = {**make_fs_tools(root), **make_dev_tools(root)}
     return [scoped.get(t.name, t) for t in tools]
+
+
+def select_tool_names(
+    req: AgentRequest, mode: Mode, skills: Sequence[Skill], registry: Registry
+) -> tuple[list[str], set[str]]:
+    """Tools que se cargan para este pedido y el conjunto de opt-in activadas.
+
+    Las tools opt-in (búsqueda web, deep research) no entran hasta que se piden:
+    hasta entonces, cargar sus esquemas en el prompt es tokens de entrada
+    tirados. Se devuelven también las activadas para filtrar los subagentes.
+    """
+    enabled = {name for name in req.opt_in if registry.is_gated(name)}
+    names = [
+        n
+        for n in [*mode.base_tool_names, *(t for s in skills for t in s.tool_names)]
+        if not registry.is_gated(n) or n in enabled
+    ]
+    names.extend(n for n in enabled if n not in names)
+    return names, enabled
 
 
 def build_agent(
@@ -54,7 +84,7 @@ def build_agent(
     skills = [registry.get_skill(name, req.user_id) for name in req.skills]
     allowed = mode.categories
 
-    tool_names = [*mode.base_tool_names, *(t for s in skills for t in s.tool_names)]
+    tool_names, enabled = select_tool_names(req, mode, skills, registry)
     tools = registry.resolve_tools(tool_names, allowed, req.user_id)
 
     subagents: list[tuple[SubAgentSpec, list[BaseTool]]] = []
@@ -64,8 +94,9 @@ def build_agent(
             if spec.name in seen:
                 continue
             seen.add(spec.name)
+            names = [n for n in spec.tool_names if not registry.is_gated(n) or n in enabled]
             # Un subagente nunca recibe más permisos que el modo activo
-            subagents.append((spec, registry.resolve_tools(spec.tool_names, allowed, req.user_id)))
+            subagents.append((spec, registry.resolve_tools(names, allowed, req.user_id)))
 
     if req.project:
         # Sandbox por proyecto: las fs_* solo operan dentro de su raíz

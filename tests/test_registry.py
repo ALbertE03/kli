@@ -18,6 +18,12 @@ def escritor() -> str:
     return "y"
 
 
+@tool("web_search")
+def buscador(query: str) -> str:
+    """Busca en la web."""
+    return ""
+
+
 def make() -> Registry:
     r = Registry()
     r.add_tool(lector, ToolCategory.READ)
@@ -71,3 +77,16 @@ def test_version_bumps_on_change():
     v = r.version
     r.add_tool(lector, ToolCategory.READ)
     assert r.version > v
+
+
+def test_opt_in_tools_are_marked_as_gated():
+    """Las tools de web se marcan: no se cargan hasta que se piden."""
+    r = Registry()
+    r.add_tool(buscador, ToolCategory.NETWORK)  # se registra como "web_search"
+    r.add_tool(lector, ToolCategory.READ)
+    assert r.is_gated("web_search")
+    assert not r.is_gated("lector")
+    assert r.gated_tools() == ["web_search"]
+    info = {t.name: t for t in r.list_tools("u1")}
+    assert info["web_search"].opt_in is True
+    assert info["lector"].opt_in is False

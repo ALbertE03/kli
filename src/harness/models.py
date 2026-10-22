@@ -89,6 +89,7 @@ def _build(
     max_tokens: int,
     stream_usage: bool,
     reasoning_effort: str | None = None,
+    reasoning_api: str = "responses",
 ) -> BaseChatModel:
     key = api_key or "not-needed"  # proxies locales sin autenticación
     # algunos modelos (gpt-6-luna, o1…) no aceptan `temperature`: si es None no se manda
@@ -103,12 +104,20 @@ def _build(
     if temperature is not None:
         common["temperature"] = temperature
     if reasoning_effort:
-        # El API de Responses es el único que transmite el razonamiento (en el
-        # de chat completions solo algunos proxies mandan `reasoning_content`).
-        # Con `summary` el modelo envía su resumen de pensamiento, que es lo
-        # que se muestra en el cliente.
-        common["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-        common["use_responses_api"] = True
+        if reasoning_api == "chat":
+            # Chat completions: el modelo razona (`reasoning_effort`) y los proxies
+            # que lo soportan mandan el pensamiento en `delta.reasoning_content`
+            # (lo rescata KliChatOpenAI). Es la vía para los proveedores que no
+            # implementan el API de Responses.
+            common["reasoning_effort"] = reasoning_effort
+            common["use_responses_api"] = False
+        else:
+            # El API de Responses es el único que transmite el razonamiento (en el
+            # de chat completions solo algunos proxies mandan `reasoning_content`).
+            # Con `summary` el modelo envía su resumen de pensamiento, que es lo
+            # que se muestra en el cliente.
+            common["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+            common["use_responses_api"] = True
     if kind == "openai":
         return KliChatOpenAI(stream_usage=stream_usage, **common)  # type: ignore[arg-type]
     return ChatAnthropic(max_tokens=max_tokens, **common)  # type: ignore[arg-type]
@@ -130,6 +139,7 @@ def build_chat_model(rp: ResolvedProvider) -> BaseChatModel:
         s.max_output_tokens,
         s.openai_stream_usage,
         s.reasoning_effort,
+        s.reasoning_api,
     )
 
 

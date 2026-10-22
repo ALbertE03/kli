@@ -22,9 +22,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 # código (montado también por compose para desarrollo en caliente)
 COPY src ./src
 
-# el CLI: `kliccode` == `python -m cli`
-RUN printf '#!/bin/sh\nexec /app/.venv/bin/python -m cli "$@"\n' > /usr/local/bin/kliccode \
-    && chmod +x /usr/local/bin/kliccode
+# el CLI: `klicode` == `python -m cli`
+RUN printf '#!/bin/sh\nexec /app/.venv/bin/python -m cli "$@"\n' > /usr/local/bin/klicode \
+    && chmod +x /usr/local/bin/klicode
 
 RUN useradd -m app \
     && mkdir -p /app/data /app/workspace /app/projects /app/import \

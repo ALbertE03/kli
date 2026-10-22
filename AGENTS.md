@@ -1,14 +1,14 @@
-# AGENTS.md — kliccode (KLI)
+# AGENTS.md — klicode (KLI)
 
 Harness agéntico: API FastAPI + TUI Textual. **El código, los comentarios y la documentación están en español: escribe en español.**
 
-## Estructura (tres paquetes dentro de `src/`, no `src/kliccode`)
+## Estructura (tres paquetes dentro de `src/`, no `src/klicode`)
 
 | paquete | qué es | entrypoint |
 |---|---|---|
 | `src/api` | servidor FastAPI, rutas en `api/routes/`, prefijo `/api/v1` | `api.main:app` |
 | `src/harness` | núcleo: registro, kernel, streaming, storage, memoria, plugins | — |
-| `src/cli` | TUI de Textual | `cli.app:main` → binario `kliccode` |
+| `src/cli` | TUI de Textual | `cli.app:main` → binario `klicode` |
 
 - `src/cli` **no importa `harness`**: es cliente puro de la API (SSE en `POST /api/v1/chat/stream`).
 - `pytest` pone `src` en el path (`pyproject.toml`), así que los imports son `from api...`, `from harness...`, `from cli...`.
@@ -44,10 +44,15 @@ make test        # pytest -q
 
 - `src/harness/plugins/**` se autoregistra: `load_plugins()` importa cada módulo al arrancar y cada uno llama a `registry.add_tool/add_skill/add_mode`. Para añadir una tool/skill/modo: crea el módulo en `plugins/` y autoregístrate — no hay lista que actualizar.
 - Nombres de tool **reservados por deepagents** (registrarlos da conflicto): `task, write_todos, ls, read_file, write_file, edit_file, glob, grep, execute`.
+- **Tools opt-in**: `registry.GATED_TOOL_NAMES` (web_search, deep_search) no se cargan en el prompt hasta que el cliente las pide (`opt_in` en `AgentConfigIn` → `AgentRequest.opt_in`). El kernel las filtra en `select_tool_names`; el cliente las enciende con `/web` o la pastilla `web` de la barra inferior. Motivo: son tokens de entrada en cada mensaje mientras no hagan falta.
+- Una tool opt-in en una skill también obeyece el interruptor: `investigacion` no busca en la web hasta que el usuario la enciende.
 - Un subagente nunca recibe más permisos que el modo activo; con proyecto, las tools de fs/terminal se confinan a su raíz (`_scope_project` en `kernel.py`).
 - `harness/streaming.py` atribuye cada evento a su subagente: la tool `task` con `subagent_type` en el input hace que sus eventos hijos lleven `agent=<nombre>`.
 - **El razonamiento se perdía**: el `ChatOpenAI` de LangChain tira los campos del delta que no conoce (`delta.reasoning_content` de los proxies). `harness/models.py` define `KliChatOpenAI`, que los rescata a `additional_kwargs`; `utils.split_chunk` los lee (bloques `reasoning`/`thinking` y los `summary` del API de Responses).
+- `split_chunk` **solo lee strings**: un dict en `additional_kwargs["reasoning"]` (formato v0.3 de LangChain) o una lista en `reasoning_details` (OpenRouter) se perdían. `_block_text` los normaliza; no añadas formatos sin pasar por ahí.
+- El razonamiento que el proveedor manda **solo en el mensaje final** (sin deltas) se recupera en `on_chat_model_end` (`EventMapper._reasoned` evita duplicarlo si ya se vaguó).
 - `REASONING_EFFORT` (vacío = no mandar) **cambia de endpoint**: con valor, el harness usa el **API de Responses** (`reasoning={"effort":…, "summary":"auto"}`), que es el único que transmite el pensamiento (eventos `response.reasoning_summary_text.delta` → bloque `{"type":"reasoning","summary":[…]}`). Sin valor, se usa chat completions y solo se ve si el proxy manda `delta.reasoning_content`.
+- Si el modelo debía razonar y no dice nada, `_warn_missing_reasoning` (en `streaming.py`) avisa en el log del servidor con los **tipos de bloque** que sí llegaron: así se distingue "lo perdimos nosotros" de "el proveedor no lo manda".
 - `HARNESS_ENV=prod` exige `API_KEYS`; sin ellas (dev) el usuario va por la cabecera `X-User-Id`.
 
 ## CLI: reglas de la interfaz

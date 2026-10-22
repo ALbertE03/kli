@@ -5,9 +5,9 @@ from harness.types import Mode, ToolCategory
 
 MEMORY_TOOLS = ("remember", "recall", "forget")
 
+# La búsqueda web (web_search/deep_search) NO está aquí: son tools opt-in y
+# solo se cargan cuando el usuario las activa (ver harness.registry).
 READ_ONLY_TOOLS = (
-    "web_search",
-    "deep_search",
     "fs_read_file",
     "fs_list_directory",
     "fs_file_search",

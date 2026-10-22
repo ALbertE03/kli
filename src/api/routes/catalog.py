@@ -24,6 +24,8 @@ async def server_config(user: User, rt: Rt) -> ServerConfigOut:
         max_custom_per_user=settings.max_custom_per_user,
         projects_dir=str(settings.projects_dir),
         projects_import_roots=rt.projects.import_roots(),
+        reasoning_effort=settings.reasoning_effort,
+        reasoning_api=settings.reasoning_api,
     )
 
 

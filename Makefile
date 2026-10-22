@@ -4,7 +4,7 @@ install:
 dev:
 	uv run uvicorn api.main:app --reload --app-dir src --port 8000
 cli:
-	uv run kliccode
+	uv run klicode
 test:
 	uv run pytest -q
 lint:

@@ -67,6 +67,62 @@ def test_reasoning_summary_block_is_mapped():
     assert out[0].text == "pienso **en voz alta**"
 
 
+def test_reasoning_in_the_v03_format_is_mapped():
+    """El formato viejo deja el razonamiento como dict en `additional_kwargs`."""
+    piece = SimpleNamespace(
+        content="",
+        additional_kwargs={
+            "reasoning": {
+                "summary": [{"index": 0, "type": "summary_text", "text": "pienso"}],
+                "type": "reasoning",
+            }
+        },
+    )
+    m = EventMapper()
+    out = m.map(ev("on_chat_model_stream", chunk=piece))
+    assert out[0].type == "reasoning" and out[0].text == "pienso"
+
+
+def test_reasoning_only_in_the_final_message_is_recovered():
+    """Hay proveedores que no vaguan el razonamiento: llega en el mensaje final."""
+    m = EventMapper()
+    m.map(ev("on_chat_model_stream", run_id="m1", chunk=chunk("hola")))
+    final = SimpleNamespace(
+        content=[
+            {
+                "type": "reasoning",
+                "index": 0,
+                "summary": [{"index": 0, "type": "summary_text", "text": "pienso"}],
+            }
+        ],
+        usage_metadata=None,
+    )
+    out = m.map(ev("on_chat_model_end", run_id="m1", output=final))
+    assert out and out[0].type == "reasoning" and out[0].text == "pienso"
+    assert m.saw_reasoning is True
+
+
+def test_reasoning_is_not_repeated_when_it_was_streamed():
+    """Si ya salió en el stream, el mensaje final no lo duplica."""
+    m = EventMapper()
+    piece = SimpleNamespace(content="", additional_kwargs={"reasoning_content": "pienso"})
+    m.map(ev("on_chat_model_stream", run_id="m1", chunk=piece))
+    final = SimpleNamespace(content="hola", usage_metadata=None)
+    out = m.map(ev("on_chat_model_end", run_id="m1", output=final))
+    assert out == []
+
+
+def test_reasoning_inside_a_tool_is_not_recovered():
+    """El razonamiento de una tool interna no se cuela en la respuesta."""
+    m = EventMapper()
+    m.map(ev("on_tool_start", run_id="deep", name="deep_search", input={"question": "q"}))
+    final = SimpleNamespace(
+        content=[{"type": "reasoning", "summary": [{"text": "pienso"}]}], usage_metadata=None
+    )
+    out = m.map(ev("on_chat_model_end", run_id="m1", parents=["deep"], output=final))
+    assert out == []
+
+
 def test_openai_model_keeps_the_reasoning_of_the_proxy():
     """El ChatOpenAI de LangChain tira el razonamiento: aquí se rescata."""
     from langchain_core.messages import AIMessageChunk
@@ -83,6 +139,20 @@ def test_openai_model_keeps_the_reasoning_of_the_proxy():
     )
     assert generation is not None
     assert generation.message.additional_kwargs["reasoning_content"] == "pienso"
+
+
+def test_the_reasoning_api_switches_the_endpoint():
+    """`REASONING_API` decide por dónde se pide el razonamiento."""
+    from harness.models import _build
+
+    args = ("openai", None, "x", "gpt-6-luna", None, 10.0, 1, 100, False)
+    responses = _build(*args, "low", "responses")
+    assert responses.use_responses_api is True
+    assert responses.reasoning == {"effort": "low", "summary": "auto"}
+
+    chat = _build(*args, "low", "chat")
+    assert chat.use_responses_api is False
+    assert chat.reasoning_effort == "low"
 
 
 def test_usage_accumulates():

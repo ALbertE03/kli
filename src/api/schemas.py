@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -7,6 +7,8 @@ from harness.providers import ProviderOut
 from harness.types import NAME_PATTERN, Project, SkillBase, ToolCategory, ToolInfo
 
 THREAD_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
+
+ToolName = Annotated[str, Field(pattern=NAME_PATTERN)]
 
 
 class AgentConfigIn(BaseModel):
@@ -17,6 +19,9 @@ class AgentConfigIn(BaseModel):
     model: str | None = Field(default=None, max_length=120)
     # proyecto activo: las fs_* quedan confinadas a su raíz
     project: str | None = Field(default=None, pattern=NAME_PATTERN)
+    # tools opt-in que se cargan (p. ej. web_search). Vacío = solo las de siempre:
+    # así la búsqueda web no se cuela en el prompt hasta que se pide.
+    opt_in: list[ToolName] = Field(default_factory=list, max_length=10)
 
 
 class ProviderIn(BaseModel):
@@ -76,6 +81,11 @@ class ServerConfigOut(BaseModel):
     # dónde se crean los proyectos y desde dónde se pueden importar carpetas
     projects_dir: str
     projects_import_roots: list[str] = []
+    # esfuerzo de razonamiento del servidor (vacío = el modelo no muestra su
+    # razonamiento: el cliente avisa de cómo activarlo)
+    reasoning_effort: str | None = None
+    # por dónde llega el razonamiento: "responses" (API de Responses) o "chat"
+    reasoning_api: str = "responses"
 
 
 class ThreadOut(BaseModel):

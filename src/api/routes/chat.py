@@ -54,7 +54,9 @@ def _resolve_project(rt: Rt, user: str, requested: str | None, thread: str) -> s
 
 
 def _agent_request(user: str, cfg: AgentConfigIn, project: str | None) -> AgentRequest:
-    return AgentRequest(user, cfg.mode, tuple(cfg.skills), cfg.provider, cfg.model, project)
+    return AgentRequest(
+        user, cfg.mode, tuple(cfg.skills), cfg.provider, cfg.model, project, tuple(cfg.opt_in)
+    )
 
 
 @router.post("/chat/stream")

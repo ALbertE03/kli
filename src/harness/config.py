@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     temperature: float | None = 0.2  # None = no mandarlo (modelos que no lo admiten)
     # esfuerzo de razonamiento: vacío = no mandarlo (solo lo aceptan algunos modelos)
     reasoning_effort: str | None = None
+    # por dónde se pide el razonamiento:
+    #   "responses" → API de Responses (el resumen del pensamiento)
+    #   "chat"      → chat completions (`delta.reasoning_content` de los proxies)
+    reasoning_api: Literal["responses", "chat"] = "responses"
     request_timeout: float = 120.0
     max_retries: int = 2
     max_output_tokens: int = 8192

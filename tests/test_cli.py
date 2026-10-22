@@ -17,6 +17,7 @@ from cli.widgets import (
     ReasoningPanel,
     SubagentLoader,
     TabChip,
+    ToggleChip,
     ToolCard,
     UserMessage,
 )
@@ -57,6 +58,21 @@ def test_sse_parser_close_emits_pending_event():
     assert event is not None and event.type == "done"
 
 
+# ---------------------------------------------------------------- payload
+
+
+def test_the_chat_payload_forwards_the_opt_in_tools():
+    """Las tools opt-in tienen que llegar al servidor: si no, no se cargan."""
+    from cli.client import HarnessClient
+
+    client = HarnessClient(CliConfig(base_url="http://servidor-fake"))
+    body = {"message": "hola", "mode": "plan", "skills": [], "opt_in": ["web_search"]}
+    payload = client._chat_payload(body)
+    assert payload["opt_in"] == ["web_search"]
+
+    # apagada: no se manda el campo (el servidor no carga nada extra)
+    assert "opt_in" not in client._chat_payload({"message": "hola"})
+
 # ---------------------------------------------------------------- TUI
 
 
@@ -93,8 +109,13 @@ class FakeClient:
     async def registry(self) -> dict[str, Any]:
         return {
             "modes": [{"name": "plan", "description": "solo lectura"}],
-            "skills": [{"name": "investigacion", "description": "busca en la web"}],
-            "tools": [{"name": "code_search", "category": "read"}],
+            "skills": [
+                {"name": "investigacion", "description": "busca en la web", "tool_names": ["web_search"]}
+            ],
+            "tools": [
+                {"name": "code_search", "category": "read"},
+                {"name": "web_search", "category": "network", "opt_in": True},
+            ],
             "providers": [{"name": "openai"}],
             "projects": [{"name": "demo", "root": "/tmp/demo"}],
         }
@@ -327,6 +348,84 @@ def test_slash_command_switches_mode():
             assert app.mode == "plan"
             await app._command("/mode inexistente")
             assert app.mode == "plan"  # no cambia si el modo no existe
+
+    _run(scenario)
+
+
+# ---------------------------------------------------------------- búsqueda web
+
+
+def test_web_is_off_by_default_and_the_request_omits_it():
+    """Sin tocarla, la búsqueda web no se pide: el prompt va más corto."""
+
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([ServerEvent("token", {"text": "hola"}), ServerEvent("done", {})])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert app.web is False
+            app.query_one("#prompt").value = "hola"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if client.sent:
+                    break
+            assert client.sent
+            assert "opt_in" not in client.sent[0]
+
+    _run(scenario)
+
+
+def test_web_command_asks_for_the_opt_in_tools():
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([ServerEvent("token", {"text": "hola"}), ServerEvent("done", {})])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/web on")
+            assert app.web is True
+            app.query_one("#prompt").value = "busca algo"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if client.sent:
+                    break
+            assert client.sent[0]["opt_in"] == ["web_search"]
+            await app._command("/web off")
+            assert app.web is False
+
+    _run(scenario)
+
+
+def test_the_web_chip_in_the_status_bar_toggles_it():
+    """La pastilla de la barra inferior es el botón de la búsqueda web."""
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient([])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            chip = app.query_one(ToggleChip)
+            assert app.web is False
+            chip.post_message(ToggleChip.Pressed("web"))
+            for _ in range(10):
+                await pilot.pause()
+                if app.web:
+                    break
+            assert app.web is True
+
+    _run(scenario)
+
+
+def test_a_skill_that_needs_the_web_turns_it_on():
+    """La skill `investigacion` usa la web: al activarla, se enciende."""
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient([])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/skill investigacion")
+            assert "investigacion" in app.skills
+            assert app.web is True
 
     _run(scenario)
 
@@ -941,7 +1040,7 @@ def test_tool_output_is_markdown_when_it_is():
     events = [
         ServerEvent(
             "tool_start",
-            {"name": "web_search", "run_id": "r1", "payload": {"query": "kliccode"}},
+            {"name": "web_search", "run_id": "r1", "payload": {"query": "klicode"}},
         ),
         ServerEvent(
             "tool_end",

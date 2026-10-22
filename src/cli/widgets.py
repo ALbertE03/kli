@@ -231,6 +231,8 @@ class CommandSuggester(Suggester):
             return [str(item.get("name", "")) for item in registry.get("skills", [])]
         if head == "/project":
             return [str(item.get("name", "")) for item in registry.get("projects", [])]
+        if head == "/web":
+            return ["on", "off"]
         return []
 
 
@@ -357,6 +359,18 @@ class ContextPanel(Static):
         else:
             text.append("  (ninguna)\n", style=theme.FAINT)
 
+        section("web")
+        web_on = bool(d.get("web"))
+        text.append("  ", style=theme.FAINT)
+        text.append("● " if web_on else "○ ", style=theme.ACCENT if web_on else theme.FAINT)
+        text.append("búsqueda web", style=theme.TEXT_HI if web_on else theme.DIM)
+        text.append("\n")
+        web_tools = [str(n) for n in (d.get("web_tools") or [])]
+        if web_tools:
+            text.append("    " + " · ".join(web_tools) + "\n", style=theme.FAINT)
+        if not web_on:
+            text.append("    activa: barra inferior\n", style=theme.FAINT)
+
         section("tokens")
         usage = d.get("usage") or {}
         text.append("  in ", style=theme.ACCENT2)
@@ -389,7 +403,7 @@ class UserMessage(Horizontal):
 
 
 # ---------------------------------------------------------------------------
-# Banner de bienvenida: la palabra "kliccode" en grande (píxeles de bloques)
+# Banner de bienvenida: la palabra "klicode" en grande (píxeles de bloques)
 # con una letra viva. Fuente de 5 filas, cada letra con ancho fijo.
 # ---------------------------------------------------------------------------
 BANNER_FONT: dict[str, tuple[str, ...]] = {
@@ -412,9 +426,9 @@ BANNER_FRAMES: tuple[tuple[str, ...], ...] = (
 
 
 class WelcomeBanner(Static):
-    """'kliccode' en grande con una letra que se mueve (todo en grises)."""
+    """'klicode' en grande con una letra que se mueve (todo en grises)."""
 
-    WORD = "kliccode"
+    WORD = "klicode"
     ANIMATED = 2  # índice de la letra animada: la 'i'
     ROWS = 5
     FRAME_TIME = 0.28
@@ -836,6 +850,46 @@ class ApprovalPanel(Vertical):
             self.post_message(self.Rejected())
 
 
+class ToggleChip(Static):
+    """Pastilla conmutable (por ejemplo, la búsqueda web).
+
+    El estado se marca con la forma, no con el color: ○ apagada · ● encendida.
+    """
+
+    class Pressed(Message):
+        """El usuario ha pulsado la pastilla."""
+
+        def __init__(self, key: str) -> None:
+            super().__init__()
+            self.key = key
+
+    def __init__(self, key: str, label: str) -> None:
+        super().__init__()
+        self.add_class("toggle-chip")
+        self._key = key
+        self._label = label
+        self._on = False
+        self._paint()
+
+    def on_click(self) -> None:
+        self.post_message(self.Pressed(self._key))
+
+    @property
+    def key(self) -> str:
+        return self._key
+
+    def set_state(self, on: bool) -> None:
+        if self._on != on:
+            self._on = on
+            self._paint()
+
+    def _paint(self) -> None:
+        text = Text()
+        text.append("● " if self._on else "○ ", style=theme.ACCENT if self._on else theme.FAINT)
+        text.append(self._label, style=theme.TEXT_HI if self._on else theme.DIM)
+        self.update(text)
+
+
 class StatusBar(Horizontal):
     """Barra inferior: estado a la izquierda, avisos a la derecha."""
 
@@ -845,12 +899,14 @@ class StatusBar(Horizontal):
         self._spinner.display = False
         self._text = Static(Text("listo", style=theme.DIM))
         self._text.id = "status-text"
+        self._toggle = ToggleChip("web", "web")
         self._right = Static(Text("", style=theme.FAINT))
         self._right.id = "status-right"
 
     def compose(self) -> ComposeResult:
         yield self._spinner
         yield self._text
+        yield self._toggle
         yield self._right
 
     def set_status(self, text: str, style: str = theme.DIM) -> None:
@@ -861,6 +917,15 @@ class StatusBar(Horizontal):
 
     def set_busy(self, busy: bool) -> None:
         self._spinner.display = busy
+
+    def set_toggle(self, key: str, on: bool) -> None:
+        """Enciende o apaga la pastilla conmutable `key`."""
+        if key == self._toggle.key:
+            self._toggle.set_state(on)
+
+    def set_toggle_visible(self, visible: bool) -> None:
+        """Oculta la pastilla si el servidor no tiene tools opt-in."""
+        self._toggle.display = visible
 
 
 # ---------------------------------------------------------------------------

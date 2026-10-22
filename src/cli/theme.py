@@ -434,6 +434,15 @@ Screen {
 #status LoadingIndicator { width: 2; }
 #status-text { width: 1fr; height: 1; }
 #status-right { width: auto; height: 1; color: $faint; }
+/* pastilla conmutable (búsqueda web): clic para encenderla o apagarla */
+.toggle-chip {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    background: $panel;
+    content-align: right middle;
+}
+.toggle-chip:hover { background: $panel_hi; }
 
 /* --------------------------- paleta de comandos ------------------------ */
 #palette-bg {
@@ -482,7 +491,7 @@ CSS = _CSS_TEMPLATE.substitute(
 )
 
 
-def brand(text: str = "kliccode") -> Text:
+def brand(text: str = "klicode") -> Text:
     """Marca de la cabecera: neutra y en negrita (sin degradado: no hay color)."""
     return Text(text, style=f"bold {TEXT_HI}")
 

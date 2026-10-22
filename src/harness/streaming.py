@@ -30,11 +30,15 @@ class EventMapper:
     - Atribuye cada evento al subagente correcto usando `parent_ids` y la tool `task`.
     - Suprime los tokens de llamadas internas a modelos hechas dentro de una tool
       (p. ej. deep_search), para no mezclarlos con la respuesta al usuario.
+    - Recupera el razonamiento que el proveedor solo manda en el mensaje final.
     """
 
     def __init__(self) -> None:
         self._tasks: dict[str, str] = {}  # run_id de `task` -> nombre del subagente
         self._tools: set[str] = set()  # run_id de tools normales en ejecución
+        self._reasoned: set[str] = set()  # modelos que ya soltaron su razonamiento
+        self.saw_reasoning = False  # ¿ha llegado razonamiento en algún momento?
+        self.block_types: set[str] = set()  # tipos de bloque que ha mandado el proveedor
         self.usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
     def _agent_for(self, parents: list[str]) -> str | None:
@@ -45,6 +49,15 @@ class EventMapper:
 
     def _inside_tool(self, parents: list[str]) -> bool:
         return any(p in self._tools for p in parents)
+
+    def _note_blocks(self, chunk: Any) -> None:
+        """Apunta los tipos de bloque que manda el proveedor (para diagnosticar)."""
+        content = getattr(chunk, "content", None)
+        if not isinstance(content, list):
+            return
+        for block in content:
+            if isinstance(block, dict):
+                self.block_types.add(str(block.get("type", "?")))
 
     def map(self, ev: dict[str, Any]) -> list[StreamEvent]:
         kind = ev.get("event")
@@ -59,21 +72,37 @@ class EventMapper:
             chunk = data.get("chunk")
             if chunk is None:
                 return []
+            self._note_blocks(chunk)
             text, reasoning = split_chunk(chunk)
             out: list[StreamEvent] = []
             if reasoning:
+                self.saw_reasoning = True
+                if run_id:
+                    self._reasoned.add(run_id)
                 out.append(StreamEvent(type="reasoning", agent=agent, text=reasoning))
             if text:
                 out.append(StreamEvent(type="token", agent=agent, text=text))
             return out
 
         if kind == "on_chat_model_end":
-            usage = getattr(data.get("output"), "usage_metadata", None)
-            if not usage or self._inside_tool(parents):
+            output = data.get("output")
+            usage = getattr(output, "usage_metadata", None)
+            if self._inside_tool(parents):
                 return []
-            for field in self.usage:
-                self.usage[field] += int(usage.get(field, 0) or 0)
-            return [StreamEvent(type="usage", agent=agent, payload=dict(self.usage))]
+            events: list[StreamEvent] = []
+            # Hay proveedores que no vaguan el razonamiento y lo meten solo en el
+            # mensaje final: si no se recupera aquí, se pierde.
+            if run_id and run_id not in self._reasoned:
+                _, reasoning = split_chunk(output)
+                if reasoning:
+                    self.saw_reasoning = True
+                    self._reasoned.add(run_id)
+                    events.append(StreamEvent(type="reasoning", agent=agent, text=reasoning))
+            if usage:
+                for field in self.usage:
+                    self.usage[field] += int(usage.get(field, 0) or 0)
+                events.append(StreamEvent(type="usage", agent=agent, payload=dict(self.usage)))
+            return events
 
         if kind == "on_tool_start":
             name = ev.get("name") or "tool"
@@ -126,6 +155,30 @@ async def _pending_interrupts(agent: Any, config: dict[str, Any]) -> list[Any]:
         return []
 
 
+def _warn_missing_reasoning(mapper: EventMapper) -> None:
+    """Avisa en el log si el modelo debía razonar y no ha dicho nada.
+
+    Así se distingue de un vistazo si el problema es nuestro (el razonamiento
+    llega pero se pierde) o del proveedor (no lo manda).
+    """
+    if mapper.saw_reasoning:
+        return
+    from harness.config import get_settings
+
+    effort = get_settings().reasoning_effort
+    if not effort:
+        return
+    blocks = ", ".join(sorted(mapper.block_types)) or "ninguno"
+    log.warning(
+        "El modelo no ha enviado razonamiento (REASONING_EFFORT=%s). Bloques "
+        "vistos: %s. Con el API de Responses debe mandar "
+        "`response.reasoning_summary_text.delta`; con chat completions, "
+        "`delta.reasoning_content`.",
+        effort,
+        blocks,
+    )
+
+
 async def stream_run(
     agent: Any,
     inputs: Any,
@@ -149,3 +202,5 @@ async def stream_run(
     except Exception as exc:  # el stream siempre termina con un evento claro
         log.exception("Error durante la ejecución del agente")
         yield StreamEvent(type="error", text=f"{type(exc).__name__}: {clip(str(exc), 500)}")
+    finally:
+        _warn_missing_reasoning(mapper)

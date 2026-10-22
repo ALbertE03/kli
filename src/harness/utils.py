@@ -21,12 +21,37 @@ def content_to_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+def _block_text(block: Any) -> str:
+    """Texto de un bloque de razonamiento, sea str, dict o lista de bloques.
+
+    Cada proveedor lo da de otra manera: el API de Responses lo manda en
+    `summary` (lista de bloques `summary_text`), el formato viejo (v0.3) lo
+    deja como dict en `additional_kwargs["reasoning"]` y los proxies lo
+    mandan como texto plano.
+    """
+    if isinstance(block, str):
+        return block
+    if isinstance(block, list):
+        return "".join(_block_text(item) for item in block)
+    if isinstance(block, dict):
+        for key in ("summary", "text", "reasoning", "thinking", "content"):
+            raw = block.get(key)
+            if isinstance(raw, str) and raw:
+                return raw
+            if isinstance(raw, list | dict):
+                found = _block_text(raw)
+                if found:
+                    return found
+    return ""
+
+
 def split_chunk(chunk: Any) -> tuple[str, str]:
     """Separa (texto, razonamiento) de un chunk de streaming.
 
     El razonamiento llega de varias maneras según el proveedor:
       · bloques `{"type": "reasoning"|"thinking"}` dentro del contenido
       · `additional_kwargs["reasoning_content"]` (proxies OpenAI-compatible)
+      · `additional_kwargs["reasoning"]` (formato v0.3: un dict, no un texto)
     """
     content = getattr(chunk, "content", chunk)
     text: list[str] = []
@@ -41,23 +66,15 @@ def split_chunk(chunk: Any) -> tuple[str, str]:
                 kind = block.get("type")
                 if kind == "text":
                     text.append(str(block.get("text", "")))
-                elif kind == "reasoning":
+                elif kind in ("reasoning", "thinking"):
                     # API de Responses: el texto va en "summary"
-                    raw = block.get("reasoning")
-                    if isinstance(raw, str) and raw:
-                        reasoning.append(raw)
-                    else:
-                        for part in block.get("summary") or []:
-                            if isinstance(part, dict) and part.get("text"):
-                                reasoning.append(str(part["text"]))
-                elif kind == "thinking":
-                    reasoning.append(str(block.get("thinking", "")))
+                    reasoning.append(_block_text(block))
     extra = getattr(chunk, "additional_kwargs", None)
     if isinstance(extra, dict):
-        for key in ("reasoning_content", "reasoning"):
-            raw = extra.get(key)
-            if isinstance(raw, str) and raw:
-                reasoning.append(raw)
+        for key in ("reasoning_content", "reasoning", "reasoning_details", "thinking"):
+            found = _block_text(extra.get(key))
+            if found:
+                reasoning.append(found)
     return "".join(text), "".join(reasoning)
 
 

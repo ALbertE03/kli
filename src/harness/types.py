@@ -20,6 +20,9 @@ class ToolInfo(BaseModel):
     description: str
     category: ToolCategory
     owner: str | None = None
+    # Las tools opt-in no se cargan en el prompt hasta que se piden: son
+    # tokens de entrada que se ahorran mientras no hacen falta.
+    opt_in: bool = False
 
 
 class SubAgentSpec(BaseModel):

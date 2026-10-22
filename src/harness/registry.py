@@ -16,6 +16,12 @@ log = logging.getLogger(__name__)
 RESERVED_TOOL_NAMES = frozenset(
     {"task", "write_todos", "ls", "read_file", "write_file", "edit_file", "glob", "grep", "execute"}
 )
+
+# Tools "opt-in": no entran en el prompt hasta que se piden explícitamente.
+# La búsqueda web y el deep research son caras de describir (y de usar): si no
+# hacen falta, cargar sus esquemas es tokens de entrada tirados.
+GATED_TOOL_NAMES = frozenset({"web_search", "deep_search"})
+
 _TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -24,6 +30,7 @@ class ToolEntry:
     tool: BaseTool
     category: ToolCategory
     owner: str | None = None  # None = tool del sistema
+    opt_in: bool = False  # solo se carga si se pide
 
 
 class Registry:
@@ -46,7 +53,9 @@ class Registry:
             raise Conflict(f"Tool duplicada: {name}")
         if not tool.handle_tool_error:
             tool.handle_tool_error = True  # los errores vuelven al modelo como texto
-        self._tools[(owner, name)] = ToolEntry(tool, category, owner)
+        self._tools[(owner, name)] = ToolEntry(
+            tool, category, owner, opt_in=name in GATED_TOOL_NAMES
+        )
         self.version += 1
         return tool
 
@@ -68,11 +77,23 @@ class Registry:
                     description=(e.tool.description or "")[:200],
                     category=e.category,
                     owner=e.owner,
+                    opt_in=e.opt_in,
                 )
                 for (owner, _), e in self._tools.items()
                 if owner is None or owner == user_id
             ),
             key=lambda t: t.name,
+        )
+
+    def is_gated(self, name: str) -> bool:
+        """¿La tool es opt-in (solo se carga si se pide)?"""
+        entry = self._tools.get((None, name))
+        return bool(entry and entry.opt_in)
+
+    def gated_tools(self) -> list[str]:
+        """Nombres de las tools del sistema que son opt-in."""
+        return sorted(
+            name for (owner, name), e in self._tools.items() if owner is None and e.opt_in
         )
 
     def require_tools(self, names: Iterable[str], user_id: str | None) -> None:

@@ -42,7 +42,7 @@ services:
   cli:
     build: .
     profiles: ["cli"]
-    entrypoint: ["kliccode"]
+    entrypoint: ["klicode"]
     command: []
     environment:
       KLI_API_URL: http://api:8000

@@ -35,6 +35,15 @@ def test_registry_lists_modes_and_tools(client):
     assert "hora_actual" not in names
 
 
+def test_registry_marks_the_web_tools_as_opt_in(client):
+    """La búsqueda web viene apagada: el cliente tiene que pedirla."""
+    data = client.get("/api/v1/registry", headers=H).json()
+    tools = {t["name"]: t for t in data["tools"]}
+    assert tools["web_search"]["opt_in"] is True
+    assert tools["deep_search"]["opt_in"] is True
+    assert tools["code_search"]["opt_in"] is False
+
+
 def test_skill_lifecycle_and_isolation(client):
     assert client.post("/api/v1/skills", json=SKILL, headers=H).status_code == 201
     assert client.post("/api/v1/skills", json=SKILL, headers=H).status_code == 409

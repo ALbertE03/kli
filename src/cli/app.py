@@ -42,6 +42,7 @@ from cli.widgets import (
     SystemNote,
     TabChip,
     TabStrip,
+    ToggleChip,
     ToolCard,
     TopBar,
     UserMessage,
@@ -55,6 +56,17 @@ def _slug(text: str) -> str:
     """Convierte un nombre en un id válido de widget."""
     out = "".join(ch if ch.isalnum() else "-" for ch in text.lower())
     return out.strip("-") or "subagent"
+
+
+# Familias de modelos cuyo razonamiento solo llega con el API de Responses
+# (es decir, con `REASONING_EFFORT` configurado en el servidor).
+_REASONING_FAMILIES = ("gpt-5", "gpt-6", "o1", "o3", "o4")
+
+
+def _expects_reasoning(model: str) -> bool:
+    """¿Este modelo razona y solo enseña el pensamiento con el API de Responses?"""
+    name = model.split("/")[-1].lower()
+    return any(name.startswith(family) for family in _REASONING_FAMILIES)
 
 
 def _api_hints(exc: ApiError) -> list[str]:
@@ -115,7 +127,7 @@ class _Conversation:
     running: bool = False
 
 
-HELP = """### kliccode · comandos
+HELP = """### klicode · comandos
 
 Todo lo que hace la API se puede hacer desde aquí. Cada comando indica su endpoint.
 
@@ -126,9 +138,15 @@ Todo lo que hace la API se puede hacer desde aquí. Cada comando indica su endpo
 | `/model <modelo\\|auto>` | `POST /api/v1/chat/stream` (`model`) |
 | `/provider <nombre>` | `POST /api/v1/chat/stream` (`provider`) |
 | `/skill <nombre>` | `POST /api/v1/chat/stream` (`skills`) |
+| `/web` | `POST /api/v1/chat/stream` (`opt_in`) |
 | `/project <nombre\\|none>` | `POST /api/v1/chat/stream` (`project`) |
 | `/user [nombre]` | cabecera `X-User-Id` |
 | `/new` · `/clear` · `/quit` | — |
+
+**Búsqueda web**
+La búsqueda web (`web_search`, `deep_search`) viene **apagada**: hasta que la
+activas, el servidor no la carga en el prompt y se ahorran tokens de entrada.
+Se enciende con `/web` o con la pastilla `web` de la barra inferior.
 
 **Subagentes**
 Cuando el agente lanza un subagente se abre una pestaña propia con su conversación.
@@ -238,7 +256,7 @@ class KliApp(App[None]):
     """Aplicación de terminal: chat con el agente, con contexto visible."""
 
     CSS = theme.CSS
-    TITLE = "kliccode"
+    TITLE = "klicode"
     SUB_TITLE = "agentic harness"
     # el CLI tiene su propia paleta de comandos (ctrl+p): la de Textual se
     # apaga para que no se robe el atajo (su binding es prioritario).
@@ -254,6 +272,7 @@ class KliApp(App[None]):
         "/providers",
         "/skill",
         "/skills",
+        "/web",
         "/project",
         "/projects",
         "/mcp",
@@ -291,6 +310,8 @@ class KliApp(App[None]):
         self.provider: str | None = None
         self.model: str | None = None
         self.project: str | None = None
+        # Tools opt-in (búsqueda web): apagadas hasta que el usuario las pide.
+        self.web = False
         self.thread_id: str | None = None
         self.usage: dict[str, int] = {}
         self._busy = False
@@ -392,8 +413,8 @@ class KliApp(App[None]):
                 f"`{self.config.base_url}` respondió **{exc.status}**: {exc.detail}",
                 [
                     "Arranca la API: `make dev` (o `docker compose up`)",
-                    "O apunta a otro servidor: `kliccode --url http://otro:8000`",
-                    "Si el servidor pide clave: `kliccode --api-key <clave>`",
+                    "O apunta a otro servidor: `klicode --url http://otro:8000`",
+                    "Si el servidor pide clave: `klicode --api-key <clave>`",
                 ],
             )
             return
@@ -401,9 +422,32 @@ class KliApp(App[None]):
             str(health.get("version", "?")), self.config.base_url, self.config.user
         )
         self.set_status("conectado", theme.STYLE_OK)
-        self.refresh_context()
+        self._sync_web()
         self._welcome = WelcomeSplash(self.config.base_url, self.config.user)
         self.add_widget(self._welcome)
+        self._warn_reasoning()
+
+    def _warn_reasoning(self) -> None:
+        """Si el modelo razona pero el servidor no lo enseña, se dice cómo arreglarlo.
+
+        Sin `REASONING_EFFORT` el harness no pide razonamiento: el usuario ve la
+        respuesta pero no el pensamiento, y no hay forma de saber por qué desde
+        la TUI.
+        """
+        if self.server.get("reasoning_effort"):
+            return
+        if self.server.get("default_provider") != "openai":
+            return
+        model = str(self.server.get("default_model") or "")
+        if not _expects_reasoning(model):
+            return
+        self.add_system(
+            f"**{model} razona, pero el servidor no te enseña su razonamiento.**\n\n"
+            "`REASONING_EFFORT` está vacío, así que el harness no pide razonamiento.\n\n"
+            "**Qué hacer**: ponle `REASONING_EFFORT=medium` en el `.env` del servidor "
+            "y reinicia la API (con valor se usa el API de Responses, que sí lo "
+            "envía)."
+        )
 
     # ---------------- chat ----------------
     @property
@@ -555,7 +599,63 @@ class KliApp(App[None]):
             body["model"] = self.model
         if self.project:
             body["project"] = self.project
+        if self.web:
+            # solo se piden cuando están activas: si no, el servidor no las
+            # carga en el prompt (menos tokens de entrada)
+            body["opt_in"] = self._gated_tools()
         return body
+
+    # ---------------- búsqueda web (tools opt-in) ----------------
+    def _gated_tools(self) -> list[str]:
+        """Tools opt-in del servidor (búsqueda web): no se cargan hasta pedirlas."""
+        return [
+            str(tool.get("name"))
+            for tool in self.registry.get("tools", [])
+            if tool.get("opt_in")
+        ]
+
+    def _toggle_web(self) -> None:
+        """Enciende o apaga la búsqueda web."""
+        tools = self._gated_tools()
+        if not tools:
+            self.add_system(
+                "Este servidor no tiene tools opt-in: no hay búsqueda web que activar.",
+                error=True,
+            )
+            return
+        self.web = not self.web
+        self._sync_web()
+        state = "activada" if self.web else "desactivada"
+        self.add_system(
+            f"Búsqueda web **{state}** ({', '.join(tools)})"
+            " → `POST /api/v1/chat/stream` (`opt_in`)"
+        )
+
+    def _sync_web(self) -> None:
+        """Refleja el estado de la búsqueda web en la barra inferior y el panel."""
+        bar = self._status_bar()
+        if bar is not None:
+            bar.set_toggle("web", self.web)
+            bar.set_toggle_visible(bool(self._gated_tools()))
+        self.refresh_context()
+
+    def _skill_needs_web(self, name: str) -> bool:
+        """¿La skill usa tools opt-in (búsqueda web)?"""
+        gated = set(self._gated_tools())
+        if not gated:
+            return False
+        for skill in self.registry.get("skills", []):
+            if str(skill.get("name")) == name:
+                return bool(gated & set(skill.get("tool_names") or []))
+        return False
+
+    def _enable_web_for_skill(self, name: str) -> str:
+        """Activa la búsqueda web si la skill la necesita. Devuelve el aviso."""
+        if self.web or not self._skill_needs_web(name):
+            return ""
+        self.web = True
+        self._sync_web()
+        return " · búsqueda web activada (la necesita)"
 
     async def _handle(self, ev: ServerEvent) -> None:
         kind = ev.type
@@ -838,6 +938,14 @@ class KliApp(App[None]):
         self.add_system("Rechazado ✗")
         self._run_resume({"decisions": [{"type": "reject", "message": "Rechazado por el usuario"}]})
 
+    @on(ToggleChip.Pressed)
+    def _on_toggle(self, event: ToggleChip.Pressed) -> None:
+        """Pastilla de la barra inferior: aquí, la búsqueda web."""
+        event.stop()
+        if event.key == "web":
+            self._toggle_web()
+        self._focus_prompt()
+
     # ---------------- contexto ----------------
     def refresh_context(self) -> None:
         try:
@@ -863,6 +971,8 @@ class KliApp(App[None]):
                 "default_model": self.server.get("default_model"),
                 "tool_counts": counts,
                 "usage": self.usage,
+                "web": self.web,
+                "web_tools": self._gated_tools(),
             }
         )
 
@@ -916,6 +1026,8 @@ class KliApp(App[None]):
             await self._cmd_skill(args)
         elif cmd == "skills":
             self._cmd_skills()
+        elif cmd == "web":
+            self._cmd_web(args)
         elif cmd == "provider":
             await self._cmd_provider(args)
         elif cmd == "providers":
@@ -978,8 +1090,8 @@ class KliApp(App[None]):
                 f"Usuario: **{self.config.user}**\n\n"
                 "Es el valor de la cabecera `X-User-Id` con el que te identifica el "
                 "servidor (hilos, memoria, skills y proyectos son por usuario).\n\n"
-                "Cambiarlo: `/user <nombre>` · al arrancar: `KLI_USER=<nombre> kliccode` "
-                "· `kliccode --user <nombre>`.\n\n"
+                "Cambiarlo: `/user <nombre>` · al arrancar: `KLI_USER=<nombre> klicode` "
+                "· `klicode --user <nombre>`.\n\n"
                 "Si el servidor tiene `API_KEYS` configuradas, manda la clave Bearer y "
                 "el usuario lo decide el servidor (la cabecera se ignora)."
             )
@@ -1032,7 +1144,10 @@ class KliApp(App[None]):
             self.add_system(f"Skill **{name}** desactivada (se envía en `skills` del chat)")
         else:
             self.skills.add(name)
-            self.add_system(f"Skill **{name}** activada (se envía en `skills` del chat)")
+            extra = self._enable_web_for_skill(name)
+            self.add_system(
+                f"Skill **{name}** activada (se envía en `skills` del chat){extra}"
+            )
         self.refresh_context()
 
     async def _create_skill(self, args: list[str]) -> None:
@@ -1091,6 +1206,36 @@ class KliApp(App[None]):
             )
         self.add_system(
             "### Skills\n\n" + "\n".join(lines) + "\n\n`GET /api/v1/registry` · activa con `/skill <nombre>`"
+        )
+
+    # ---------------- búsqueda web ----------------
+    def _cmd_web(self, args: list[str]) -> None:
+        """`/web [on|off]` — enciende o apaga la búsqueda web."""
+        if not args:
+            state = "activada" if self.web else "desactivada"
+            tools = ", ".join(self._gated_tools()) or "—"
+            self.add_system(
+                f"Búsqueda web: **{state}** ({tools})\n\n"
+                "Apagada, el servidor no carga `web_search` ni `deep_search` en el "
+                "prompt: se ahorran tokens de entrada.\n\n"
+                "Cambia: `/web on` · `/web off` · o la pastilla `web` de la barra inferior."
+            )
+            return
+        value = args[0].lower()
+        if value in {"on", "si", "sí", "true", "1"}:
+            if not self.web:
+                self._toggle_web()
+            else:
+                self.add_system("Búsqueda web ya está **activada**")
+            return
+        if value in {"off", "no", "false", "0"}:
+            if self.web:
+                self._toggle_web()
+            else:
+                self.add_system("Búsqueda web ya está **desactivada**")
+            return
+        self.add_system(
+            f"Valor desconocido: `{value}`. Usa `/web on` o `/web off`.", error=True
         )
 
     # ---------------- proveedores ----------------
@@ -1189,8 +1334,14 @@ class KliApp(App[None]):
     # ---------------- modelo ----------------
     def _cmd_model(self, args: list[str]) -> None:
         if not args:
+            effort = self.server.get("reasoning_effort")
+            razonamiento = (
+                f"activo (`{effort}`)" if effort else "inactivo (`REASONING_EFFORT` vacío)"
+            )
+            via = self.server.get("reasoning_api") or "responses"
             self.add_system(
                 f"Modelo actual: **{self.model or self.server.get('default_model')}**\n\n"
+                f"Razonamiento: {razonamiento} · vía `{via}`\n\n"
                 "Se envía en `POST /api/v1/chat/stream` (`model`)."
             )
             return
@@ -1663,13 +1814,25 @@ class KliApp(App[None]):
         if not tools:
             self.add_system("No hay herramientas disponibles.")
             return
+        gated = {str(t.get("name")) for t in tools if t.get("opt_in")}
         by_cat: dict[str, list[str]] = {}
         for tool in tools:
             by_cat.setdefault(str(tool.get("category", "other")), []).append(str(tool.get("name")))
         blocks = []
         for category, names in sorted(by_cat.items()):
-            blocks.append(f"**{category}** — " + ", ".join(f"`{n}`" for n in sorted(names)))
-        self.add_system("### Herramientas\n\n" + "\n\n".join(blocks) + "\n\n`GET /api/v1/registry`")
+            blocks.append(
+                f"**{category}** — "
+                + ", ".join(f"`{n}`{' *' if n in gated else ''}" for n in sorted(names))
+            )
+        note = ""
+        if gated:
+            note = (
+                "\n\nLas marcadas con `*` son **opt-in**: no se cargan en el prompt "
+                "hasta que activas la búsqueda web (`/web`)."
+            )
+        self.add_system(
+            "### Herramientas\n\n" + "\n\n".join(blocks) + note + "\n\n`GET /api/v1/registry`"
+        )
 
     # ---------------- estado ----------------
     def _new_thread(self) -> None:
@@ -1762,6 +1925,8 @@ class KliApp(App[None]):
             [
                 ("action:new", "+ hilo nuevo", "empieza una conversación limpia"),
                 ("action:clear", "- limpiar pantalla", "borra la conversación visible"),
+                ("action:web", "● web" if self.web else "○ web",
+                 "búsqueda web activada" if self.web else "búsqueda web desactivada (ahorra tokens)"),
                 ("action:projects", "▦ proyectos", "crear/listar/borrar proyectos (POST /api/v1/projects)"),
                 ("action:skills", "◈ skills", "crear/listar/borrar skills (POST /api/v1/skills)"),
                 ("action:providers", "▤ proveedores", "crear/listar proveedores (POST /api/v1/providers)"),
@@ -1773,7 +1938,7 @@ class KliApp(App[None]):
                 ("action:threads", "☰ hilos", "ver/abrir/borrar hilos (GET /api/v1/threads)"),
                 ("action:user", "◍ usuario", "ver o cambiar el usuario (X-User-Id)"),
                 ("action:help", "? ayuda", "lista los comandos"),
-                ("action:quit", "× salir", "cierra kliccode"),
+                ("action:quit", "× salir", "cierra klicode"),
             ]
         )
         return items
@@ -1792,7 +1957,8 @@ class KliApp(App[None]):
                 self.add_system(f"Skill **{value}** desactivada")
             else:
                 self.skills.add(value)
-                self.add_system(f"Skill **{value}** activada")
+                extra = self._enable_web_for_skill(value)
+                self.add_system(f"Skill **{value}** activada{extra}")
             self.refresh_context()
         elif kind == "project":
             self.project = None if value == "none" else value
@@ -1806,6 +1972,8 @@ class KliApp(App[None]):
             self._new_thread()
         elif choice == "action:clear":
             self._clear_chat()
+        elif choice == "action:web":
+            self._toggle_web()
         elif choice == "action:projects":
             self._cmd_projects()
         elif choice == "action:skills":
@@ -1839,13 +2007,13 @@ class KliApp(App[None]):
 def _parse_args(argv: list[str]) -> CliConfig:
     """Lee las opciones de la línea de comandos."""
     parser = argparse.ArgumentParser(
-        prog="kliccode",
+        prog="klicode",
         description="KLI: cliente de terminal para el harness agéntico (habla con la API).",
     )
     parser.add_argument("--url", help="URL del servidor (equivale a KLI_API_URL)")
     parser.add_argument("--user", help="usuario (cabecera X-User-Id)")
     parser.add_argument("--api-key", help="clave Bearer si el servidor exige API_KEYS")
-    parser.add_argument("-V", "--version", action="version", version=f"kliccode {__version__}")
+    parser.add_argument("-V", "--version", action="version", version=f"klicode {__version__}")
     args = parser.parse_args(argv)
     base = load_config()
     return CliConfig(
@@ -1856,7 +2024,7 @@ def _parse_args(argv: list[str]) -> CliConfig:
 
 
 def main() -> None:
-    """Punto de entrada del ejecutable `kliccode`."""
+    """Punto de entrada del ejecutable `klicode`."""
     config = _parse_args(sys.argv[1:])
     KliApp(config=config).run()
 
