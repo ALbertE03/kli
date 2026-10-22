@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-5-5"
     anthropic_api_key: SecretStr | None = None
     temperature: float | None = 0.2  # None = no mandarlo (modelos que no lo admiten)
+    # esfuerzo de razonamiento: vacío = no mandarlo (solo lo aceptan algunos modelos)
+    reasoning_effort: str | None = None
     request_timeout: float = 120.0
     max_retries: int = 2
     max_output_tokens: int = 8192

@@ -21,13 +21,19 @@ def content_to_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
-def split_chunk(content: Any) -> tuple[str, str]:
-    """Separa (texto, razonamiento) de un chunk de streaming."""
-    if isinstance(content, str):
-        return content, ""
+def split_chunk(chunk: Any) -> tuple[str, str]:
+    """Separa (texto, razonamiento) de un chunk de streaming.
+
+    El razonamiento llega de varias maneras según el proveedor:
+      · bloques `{"type": "reasoning"|"thinking"}` dentro del contenido
+      · `additional_kwargs["reasoning_content"]` (proxies OpenAI-compatible)
+    """
+    content = getattr(chunk, "content", chunk)
     text: list[str] = []
     reasoning: list[str] = []
-    if isinstance(content, list):
+    if isinstance(content, str):
+        text.append(content)
+    elif isinstance(content, list):
         for block in content:
             if isinstance(block, str):
                 text.append(block)
@@ -35,8 +41,23 @@ def split_chunk(content: Any) -> tuple[str, str]:
                 kind = block.get("type")
                 if kind == "text":
                     text.append(str(block.get("text", "")))
+                elif kind == "reasoning":
+                    # API de Responses: el texto va en "summary"
+                    raw = block.get("reasoning")
+                    if isinstance(raw, str) and raw:
+                        reasoning.append(raw)
+                    else:
+                        for part in block.get("summary") or []:
+                            if isinstance(part, dict) and part.get("text"):
+                                reasoning.append(str(part["text"]))
                 elif kind == "thinking":
                     reasoning.append(str(block.get("thinking", "")))
+    extra = getattr(chunk, "additional_kwargs", None)
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "reasoning"):
+            raw = extra.get(key)
+            if isinstance(raw, str) and raw:
+                reasoning.append(raw)
     return "".join(text), "".join(reasoning)
 
 

@@ -6,11 +6,20 @@ import asyncio
 from typing import Any
 
 import pytest
+from textual.widgets import Button, Markdown
 
 from cli.app import KliApp
 from cli.client import ServerEvent, SSEParser
 from cli.config import CliConfig
-from cli.widgets import ApprovalPanel, ToolCard, UserMessage
+from cli.widgets import (
+    AgentMessage,
+    ApprovalPanel,
+    ReasoningPanel,
+    SubagentLoader,
+    TabChip,
+    ToolCard,
+    UserMessage,
+)
 
 # ---------------------------------------------------------------- SSE
 
@@ -61,6 +70,10 @@ class FakeClient:
         self.resumed: Any = None
         self.cancelled = False
         self.calls: list[tuple[str, Any]] = []  # (método, argumentos)
+        self.headers: dict[str, str] = {}  # cabeceras de la petición
+
+    def set_user(self, user: str) -> None:
+        self.headers["X-User-Id"] = user
 
     async def health(self) -> dict[str, Any]:
         return {"status": "ok", "version": "0.1.0"}
@@ -604,5 +617,424 @@ def test_slash_commands_do_not_crash(command: str):
             await pilot.pause()
             await app._command(command)
             assert app.chat.children
+
+    _run(scenario)
+
+
+# ---------------------------------------------------------------- subagentes
+
+
+SUBAGENT_EVENTS = [
+    ServerEvent("meta", {"thread_id": "t1"}),
+    ServerEvent(
+        "tool_start",
+        {"name": "task", "run_id": "r1", "payload": {"subagent_type": "revisor", "description": "mira el código"}},
+    ),
+    ServerEvent("token", {"agent": "revisor", "text": "revisando **todo**"}),
+    ServerEvent(
+        "tool_start",
+        {"agent": "revisor", "name": "code_search", "run_id": "r2", "payload": {"pattern": "def "}},
+    ),
+    ServerEvent("tool_end", {"agent": "revisor", "name": "code_search", "run_id": "r2", "text": "3 hits"}),
+    ServerEvent("token", {"text": "listo"}),
+    ServerEvent("tool_end", {"name": "task", "run_id": "r1", "text": "revisión ok"}),
+]
+
+
+def test_subagent_opens_its_own_window_closed():
+    """Al crearse el subagente hay una ventana propia, pero nace cerrada."""
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(SUBAGENT_EVENTS)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "revisa el repo"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app.query(SubagentLoader):
+                    break
+            assert app.query(SubagentLoader), "no apareció el aviso del subagente"
+            assert app.query("#pane-revisor"), "no se creó la ventana del subagente"
+            # la ventana nace cerrada: sigue el chat principal
+            assert app.panes.current == "chat"
+            # y hay una pestaña para ella
+            assert "revisor" in [chip._key for chip in app.query(TabChip)]
+
+    _run(scenario)
+
+
+def test_subagent_events_go_to_its_window():
+    """Lo que dice el subagente aparece en su ventana, no en el chat principal."""
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(SUBAGENT_EVENTS)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "revisa el repo"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app.query("#pane-revisor"):
+                    break
+            await pilot.pause()
+            pane = app.query_one("#pane-revisor")
+            labels = [w._label.content.plain for w in pane.children if isinstance(w, AgentMessage)]
+            assert any("revisor" in label for label in labels)
+            # en el chat principal solo está el aviso (y la respuesta del agente principal)
+            main_labels = [w._label.content.plain for w in app.chat.children if isinstance(w, AgentMessage)]
+            assert not any("revisor" in label for label in main_labels)
+
+    _run(scenario)
+
+
+def test_clicking_the_loader_opens_the_subagent_window():
+    """El aviso con spinner lleva a la ventana del subagente."""
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(SUBAGENT_EVENTS)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "revisa el repo"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app.query(SubagentLoader):
+                    break
+            await pilot.click(SubagentLoader)
+            await pilot.pause()
+            await pilot.pause()
+            assert app.panes.current == "pane-revisor"
+            # en la ventana del subagente no se escribe: el prompt da paso
+            assert not app.query_one("#prompt").display
+            assert app.query_one("#prompt-note").display
+            # y al volver al chat, el prompt vuelve
+            app._open_tab("chat")
+            await pilot.pause()
+            assert app.panes.current == "chat"
+            assert app.query_one("#prompt").display
+
+    _run(scenario)
+
+
+def test_clicking_the_tab_switches_windows():
+    """La tira de pestañas salta entre la conversación y el subagente."""
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(SUBAGENT_EVENTS)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "revisa el repo"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app.query("#pane-revisor"):
+                    break
+            chip = next(c for c in app.query(TabChip) if c._key == "revisor")
+            await pilot.click(chip)
+            await pilot.pause()
+            await pilot.pause()
+            assert app.panes.current == "pane-revisor"
+            chat_chip = next(c for c in app.query(TabChip) if c._key == "chat")
+            await pilot.click(chat_chip)
+            await pilot.pause()
+            assert app.panes.current == "chat"
+
+    _run(scenario)
+
+
+def test_subagent_stops_its_spinner_when_it_finishes():
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(SUBAGENT_EVENTS)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "revisa el repo"
+            await pilot.press("enter")
+            for _ in range(40):
+                await pilot.pause()
+                if app._subagents and not app._subagents["revisor"].running:
+                    break
+            loader = app.query_one(SubagentLoader)
+            assert "terminado" in loader.content.plain
+            chip = next(c for c in app.query(TabChip) if c._key == "revisor")
+            assert "✓" in chip.content.plain
+
+    _run(scenario)
+
+
+def test_user_command_shows_and_changes_the_user():
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient([])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/user")
+            await pilot.pause()
+            assert "anonymous" in _texts(app)
+            await app._command("/user rocio")
+            await pilot.pause()
+            assert app.config.user == "rocio"
+            assert app.client.headers["X-User-Id"] == "rocio"
+            assert "rocio" in _texts(app)
+
+    _run(scenario)
+
+
+# ------------------------------------------------------------ autocompletado
+
+
+def test_tab_completes_slash_commands():
+    """`tab` completa el comando que se está escribiendo."""
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient([])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            prompt = app.query_one("#prompt")
+            prompt.value = "/mo"
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            assert prompt.value == "/mode"
+
+    _run(scenario)
+
+
+def test_tab_completes_command_arguments_and_cycles():
+    """`tab` completa el argumento y, repetido, recorre las opciones."""
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient([])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.registry = {
+                "modes": [{"name": "plan"}, {"name": "build"}],
+                "skills": [{"name": "investigacion"}, {"name": "depuracion"}],
+                "tools": [],
+            }
+            prompt = app.query_one("#prompt")
+            prompt.value = "/mode "
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            assert prompt.value == "/mode plan"
+            await pilot.press("tab")
+            await pilot.pause()
+            assert prompt.value == "/mode build"
+
+    _run(scenario)
+
+
+def test_tab_does_nothing_on_plain_text():
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient([])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            prompt = app.query_one("#prompt")
+            prompt.value = "hola"
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            assert prompt.value == "hola"
+
+    _run(scenario)
+
+
+def test_approval_takes_the_focus():
+    """Al pedir permiso, el foco va a la tarjeta: se decide con el teclado."""
+    interrupt = ServerEvent(
+        "interrupt",
+        {"payload": [{"action_requests": [{"name": "terminal", "args": {"command": "ls"}}]}]},
+    )
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient([interrupt])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "borra todo"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app.query(ApprovalPanel):
+                    break
+            await pilot.pause()
+            focused = app.screen.focused
+            assert isinstance(focused, Button)
+            assert "approve" in focused.classes
+
+    _run(scenario)
+
+
+def test_reasoning_is_rendered_as_markdown():
+    """El razonamiento se dibuja como markdown (no en crudo)."""
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(
+            [
+                ServerEvent("reasoning", {"text": "**Paso 1**: miro `test()`"}),
+                ServerEvent("token", {"text": "hecho"}),
+            ]
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "explica"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app._reasoning is not None:
+                    break
+            await pilot.pause()
+            assert app._reasoning is not None
+            # el cuerpo es un Markdown: se renderiza, no se muestra en crudo
+            body = app._reasoning._body
+            assert isinstance(body, Markdown)
+            assert body._markdown == "**Paso 1**: miro `test()`"
+
+    _run(scenario)
+
+
+def test_reasoning_keeps_everything_it_receives():
+    """El throttle del razonamiento no puede perder texto."""
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient([])
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            panel = ReasoningPanel()
+            await app.chat.mount(panel)
+            for i in range(50):
+                panel.append(f"trozo {i} ")
+            panel.flush()
+            await pilot.pause()
+            assert "trozo 49" in panel._body._markdown
+            assert panel._text.count("trozo") == 50
+
+    _run(scenario)
+
+
+def test_chat_follows_the_real_order():
+    """El orden del chat es: usuario → razonamiento → tools → respuesta."""
+    events = [
+        ServerEvent("reasoning", {"text": "primero miro"}),
+        ServerEvent("tool_start", {"name": "code_search", "run_id": "r1", "payload": {"pattern": "x"}}),
+        ServerEvent("tool_end", {"name": "code_search", "run_id": "r1", "text": "3 hits"}),
+        ServerEvent("token", {"text": "hecho"}),
+    ]
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(events)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "busca"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app._reply is not None and app._reply.body.children:
+                    break
+            await pilot.pause()
+            tipos = [type(w).__name__ for w in app.chat.children]
+            # el usuario, el razonamiento, la tool y la respuesta (en ese orden)
+            assert tipos.index("UserMessage") < tipos.index("ReasoningPanel")
+            assert tipos.index("ReasoningPanel") < tipos.index("ToolCard")
+            assert tipos.index("ToolCard") < tipos.index("AgentMessage")
+
+    _run(scenario)
+
+
+def test_tool_output_is_markdown_when_it_is():
+    """La salida de una tool en markdown se dibuja como markdown."""
+    events = [
+        ServerEvent(
+            "tool_start",
+            {"name": "web_search", "run_id": "r1", "payload": {"query": "kliccode"}},
+        ),
+        ServerEvent(
+            "tool_end",
+            {"name": "web_search", "run_id": "r1", "text": "## Resultados\n\n1. **uno**"},
+        ),
+    ]
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(events)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "busca"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app.query(ToolCard) and app.query_one(ToolCard)._output:
+                    break
+            await pilot.pause()
+            card = app.query_one(ToolCard)
+            for _ in range(20):  # el markdown se pinta en un worker
+                await pilot.pause()
+                if card._output_md._markdown:
+                    break
+            # el markdown se ve en la vista de markdown, la cruda se oculta
+            assert card._output_md.display
+            assert not card._output_view.display
+            assert "Resultados" in card._output_md._markdown
+
+    _run(scenario)
+
+
+def test_tool_output_stays_raw_when_it_is_code():
+    """La salida de código se muestra tal cual, sin interpreting markdown."""
+    events = [
+        ServerEvent("tool_start", {"name": "terminal", "run_id": "r1", "payload": {"command": "ls"}}),
+        ServerEvent("tool_end", {"name": "terminal", "run_id": "r1", "text": "  -> Compilando 3 archivos\n  ok"}),
+    ]
+
+    async def scenario(app: KliApp) -> None:
+        app.client = FakeClient(events)
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "lista"
+            await pilot.press("enter")
+            for _ in range(30):
+                await pilot.pause()
+                if app.query(ToolCard) and app.query_one(ToolCard)._output:
+                    break
+            await pilot.pause()
+            card = app.query_one(ToolCard)
+            assert card._output_view.display
+            assert not card._output_md.display
+
+    _run(scenario)
+
+
+# ----------------------------------------------------------------- errores
+
+
+def test_errors_explain_what_to_do():
+    """Un error dice qué pasó y qué hacer, no solo el detalle del servidor."""
+
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._command("/skill delete")
+            await pilot.pause()
+            text = _texts(app)
+            assert "Falta el nombre de la skill" in text
+            assert "DELETE /api/v1/skills" in text
+
+    _run(scenario)
+
+
+def test_api_error_shows_the_status_and_a_hint():
+    from cli.client import ApiError
+
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient([])
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+
+            async def forbidden(*args: Any, **kwargs: Any) -> None:
+                raise ApiError(403, "proyecto de otro usuario")
+
+            client.delete_project = forbidden  # type: ignore[method-assign]
+            await app._command("/project delete demo")
+            await pilot.pause()
+            text = _texts(app)
+            assert "403" in text
+            assert "No se pudo borrar el proyecto" in text
 
     _run(scenario)

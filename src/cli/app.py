@@ -12,14 +12,18 @@ import asyncio
 import shlex
 import sys
 import time
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any, ClassVar
 
+from rich.text import Text
 from textual import on, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import ContentSwitcher, Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from cli import __version__, theme
@@ -28,16 +32,88 @@ from cli.config import CliConfig, load_config
 from cli.widgets import (
     AgentMessage,
     ApprovalPanel,
+    CommandSuggester,
     ContextPanel,
+    ErrorNote,
+    Prompt,
     ReasoningPanel,
     StatusBar,
+    SubagentLoader,
     SystemNote,
+    TabChip,
+    TabStrip,
     ToolCard,
     TopBar,
     UserMessage,
+    WelcomeSplash,
 )
 
 __all__ = ["KliApp", "main"]
+
+
+def _slug(text: str) -> str:
+    """Convierte un nombre en un id válido de widget."""
+    out = "".join(ch if ch.isalnum() else "-" for ch in text.lower())
+    return out.strip("-") or "subagent"
+
+
+def _api_hints(exc: ApiError) -> list[str]:
+    """Pistas según el código de respuesta: un error siempre dice qué hacer."""
+    status = exc.status
+    if status in (401, 403):
+        return [
+            "Tu credencial no vale: revisa `KLI_API_KEY` o las `API_KEYS` del servidor.",
+            "En modo dev (sin `API_KEYS`) el usuario va en `X-User-Id`: `--user <nombre>`.",
+        ]
+    if status == 404:
+        return ["Ese recurso no existe en el servidor (o no es tuyo)."]
+    if status == 409:
+        return ["Ya existe algo con ese nombre: bórralo o usa otro."]
+    if status == 422:
+        return ["Los datos no son válidos: revisa el formato del comando."]
+    if status == 429:
+        return ["Te has pasado de peticiones: espera un momento y reinténtalo."]
+    if status >= 500:
+        return ["El servidor ha fallado por su lado: mira sus logs."]
+    return []
+
+
+def _error_hints(text: str) -> list[str]:
+    """Pistas según lo que dice el error del servidor."""
+    lowered = text.lower()
+    if "reasoning_effort" in lowered:
+        return [
+            (
+                "El modelo no acepta `REASONING_EFFORT`: quítalo (o déjalo vacío) en el "
+                "`.env` del servidor y vuelve a arrancar la API."
+            )
+        ]
+    if "temperature" in lowered:
+        return [
+            "El modelo no acepta `TEMPERATURE`: déjalo vacío en el `.env` del servidor."
+        ]
+    if "context_length" in lowered or "too long" in lowered:
+        return [
+            "El hilo se ha llenado: empieza uno nuevo con `/new` o reduce lo que mandas."
+        ]
+    return []
+
+
+@dataclass
+class _Conversation:
+    """Estado de una conversación en curso: la principal o la de un subagente."""
+
+    container: VerticalScroll | None = None
+    pane_id: str = ""
+    label: str = "assistant"
+    reply: AgentMessage | None = None
+    reasoning: ReasoningPanel | None = None
+    text: str = ""
+    dirty: bool = False
+    last_flush: float = 0.0
+    cards: dict[str, ToolCard] = field(default_factory=dict)
+    running: bool = False
+
 
 HELP = """### kliccode · comandos
 
@@ -51,7 +127,13 @@ Todo lo que hace la API se puede hacer desde aquí. Cada comando indica su endpo
 | `/provider <nombre>` | `POST /api/v1/chat/stream` (`provider`) |
 | `/skill <nombre>` | `POST /api/v1/chat/stream` (`skills`) |
 | `/project <nombre\\|none>` | `POST /api/v1/chat/stream` (`project`) |
+| `/user [nombre]` | cabecera `X-User-Id` |
 | `/new` · `/clear` · `/quit` | — |
+
+**Subagentes**
+Cuando el agente lanza un subagente se abre una pestaña propia con su conversación.
+En el chat principal queda un aviso con spinner: al pulsarlo vas a esa ventana.
+La tira de pestañas (arriba) permite saltar entre la conversación y los subagentes.
 
 **Proyectos** (carpetas en el host)
 | comando | endpoint |
@@ -99,7 +181,7 @@ Todo lo que hace la API se puede hacer desde aquí. Cada comando indica su endpo
 | `/thread delete <id>` | `DELETE /api/v1/threads/{id}` |
 
 Atajos: `ctrl+p` paleta de comandos · `ctrl+n` hilo nuevo · `ctrl+l` limpiar ·
-`esc` detener · `ctrl+q` salir.
+`tab` completa el comando o su argumento · `esc` detener · `ctrl+q` salir.
 """
 
 
@@ -112,8 +194,8 @@ class PaletteScreen(ModalScreen[str | None]):
         self._items = items
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="palette-box"):
-            yield Static("⌘  comandos", id="palette-title")
+        with Container(id="palette-bg"), Vertical(id="palette-box"):
+            yield Static("ctrl+p  comandos", id="palette-title")
             yield Input(placeholder="escribe para filtrar…", id="palette-input")
             yield OptionList(id="palette-list")
             yield Static("enter aplica · esc cierra", id="palette-hint")
@@ -130,7 +212,13 @@ class PaletteScreen(ModalScreen[str | None]):
             haystack = f"{label} {detail}".lower()
             if needle and needle not in haystack:
                 continue
-            options.add_option(Option(f"{label}  [dim]{detail}[/]", id=ident))
+            # el detalle se recorta: si no, la opción se parte en dos líneas
+            short = detail if len(detail) <= 38 else detail[:37] + "…"
+            options.add_option(Option(f"{label}  [dim]{short}[/]", id=ident))
+        # la primera opción queda seleccionada: se ve de un vistazo por dónde
+        # se va a aplicar la acción al pulsar enter
+        if options.option_count:
+            options.highlighted = 0
 
     @on(Input.Changed, "#palette-input")
     def _on_change(self, event: Input.Changed) -> None:
@@ -152,6 +240,34 @@ class KliApp(App[None]):
     CSS = theme.CSS
     TITLE = "kliccode"
     SUB_TITLE = "agentic harness"
+    # el CLI tiene su propia paleta de comandos (ctrl+p): la de Textual se
+    # apaga para que no se robe el atajo (su binding es prioritario).
+    ENABLE_COMMAND_PALETTE = False
+
+    # Comandos slash: es la lista que usa el autocompletado del prompt.
+    SLASH_COMMANDS: ClassVar[tuple[str, ...]] = (
+        "/help",
+        "/mode",
+        "/model",
+        "/models",
+        "/provider",
+        "/providers",
+        "/skill",
+        "/skills",
+        "/project",
+        "/projects",
+        "/mcp",
+        "/http",
+        "/memories",
+        "/memory",
+        "/threads",
+        "/thread",
+        "/tools",
+        "/user",
+        "/new",
+        "/clear",
+        "/quit",
+    )
 
     BINDINGS: ClassVar[list[Binding | tuple[str, str] | tuple[str, str, str]]] = [
         Binding("ctrl+q", "quit", "Salir"),
@@ -164,6 +280,8 @@ class KliApp(App[None]):
 
     def __init__(self, config: CliConfig | None = None) -> None:
         super().__init__()
+        self.register_theme(theme.TEXTUAL_THEME)
+        self.theme = theme.TEXTUAL_THEME.name
         self.config = config or load_config()
         self.client = HarnessClient(self.config)
         self.registry: dict[str, Any] = {}
@@ -176,12 +294,64 @@ class KliApp(App[None]):
         self.thread_id: str | None = None
         self.usage: dict[str, int] = {}
         self._busy = False
-        self._reply: AgentMessage | None = None
-        self._reasoning: ReasoningPanel | None = None
-        self._text = ""
-        self._dirty = False
-        self._last_flush = 0.0
-        self._cards: dict[str, ToolCard] = {}
+        self._main = _Conversation()
+        # subagentes: cada uno tiene su propia ventana (pestaña) y su aviso
+        # en el chat principal.
+        self._subagents: dict[str, _Conversation] = {}
+        self._loaders: dict[str, SubagentLoader] = {}
+        self._task_runs: dict[str, str] = {}
+        self._pane_ids: dict[str, str] = {}
+        self._tab = "chat"
+        self._welcome: WelcomeSplash | None = None
+
+    # ---------------- propiedades de compatibilidad ----------------
+    @property
+    def _reply(self) -> AgentMessage | None:
+        return self._main.reply
+
+    @_reply.setter
+    def _reply(self, value: AgentMessage | None) -> None:
+        self._main.reply = value
+
+    @property
+    def _reasoning(self) -> ReasoningPanel | None:
+        return self._main.reasoning
+
+    @_reasoning.setter
+    def _reasoning(self, value: ReasoningPanel | None) -> None:
+        self._main.reasoning = value
+
+    @property
+    def _cards(self) -> dict[str, ToolCard]:
+        return self._main.cards
+
+    @_cards.setter
+    def _cards(self, value: dict[str, ToolCard]) -> None:
+        self._main.cards = value
+
+    @property
+    def _text(self) -> str:
+        return self._main.text
+
+    @_text.setter
+    def _text(self, value: str) -> None:
+        self._main.text = value
+
+    @property
+    def _dirty(self) -> bool:
+        return self._main.dirty
+
+    @_dirty.setter
+    def _dirty(self, value: bool) -> None:
+        self._main.dirty = value
+
+    @property
+    def _last_flush(self) -> float:
+        return self._main.last_flush
+
+    @_last_flush.setter
+    def _last_flush(self, value: float) -> None:
+        self._main.last_flush = value
 
     # ---------------- layout ----------------
     def compose(self) -> ComposeResult:
@@ -189,15 +359,23 @@ class KliApp(App[None]):
         with Horizontal(id="body"):
             yield ContextPanel(id="context")
             with Vertical(id="chat-col"):
-                yield VerticalScroll(id="chat")
+                yield TabStrip(id="tab-strip")
+                with ContentSwitcher(id="panes", initial="chat"):
+                    yield VerticalScroll(id="chat")
                 with Horizontal(id="prompt-row"):
                     yield Static("❯", id="prompt-mark")
-                    yield Input(id="prompt", placeholder="Escribe tu mensaje…   (/help)")
+                    yield Prompt(
+                        id="prompt",
+                        placeholder="Escribe tu mensaje…   (tab completa · /help)",
+                        suggester=CommandSuggester(self),
+                    )
+                    yield Static("", id="prompt-note")
         yield StatusBar(id="status")
 
     async def on_mount(self) -> None:
-        self.query_one("#prompt", Input).focus()
-        self.set_status("conectando con el servidor…", theme.WARN)
+        self._main.container = self.chat
+        self._focus_prompt()
+        self.set_status("conectando con el servidor…", theme.STYLE_WARN)
         await self.connect()
 
     # ---------------- conexiones ----------------
@@ -207,37 +385,47 @@ class KliApp(App[None]):
             self.server = await self.client.server_config()
             self.registry = await self.client.registry()
         except ApiError as exc:
-            self.set_status("sin conexión", theme.ERR)
+            self.set_status("sin conexión", theme.STYLE_ERR)
             self.query_one(TopBar).set_disconnected("sin conexión")
-            self.add_system(
-                f"No se pudo conectar con **{self.config.base_url}**\n\n"
-                f"`{exc.detail}`\n\n"
-                "Arranca el servidor con `make dev` (o `docker compose up`) "
-                "y vuelve a pulsar `ctrl+p` → * reconectar *.",
-                error=True,
+            self.add_error(
+                "No se pudo conectar con el servidor",
+                f"`{self.config.base_url}` respondió **{exc.status}**: {exc.detail}",
+                [
+                    "Arranca la API: `make dev` (o `docker compose up`)",
+                    "O apunta a otro servidor: `kliccode --url http://otro:8000`",
+                    "Si el servidor pide clave: `kliccode --api-key <clave>`",
+                ],
             )
             return
         self.query_one(TopBar).set_connected(
             str(health.get("version", "?")), self.config.base_url, self.config.user
         )
-        self.set_status("conectado", theme.OK)
+        self.set_status("conectado", theme.STYLE_OK)
         self.refresh_context()
-        self.add_system(
-            "### Bienvenido a kliccode\n\n"
-            "El agente está listo. Escribe tu mensaje y pulsa `enter`.\n\n"
-            "- `/help` — todos los comandos\n"
-            "- `ctrl+p` — paleta de comandos\n"
-            "- `esc` — detener la respuesta en curso\n\n"
-            f"Servidor `{self.config.base_url}` · usuario `{self.config.user}`"
-        )
+        self._welcome = WelcomeSplash(self.config.base_url, self.config.user)
+        self.add_widget(self._welcome)
 
     # ---------------- chat ----------------
     @property
     def chat(self) -> VerticalScroll:
         return self.query_one("#chat", VerticalScroll)
 
+    @property
+    def panes(self) -> ContentSwitcher:
+        return self.query_one("#panes", ContentSwitcher)
+
+    @property
+    def tabs(self) -> TabStrip:
+        return self.query_one("#tab-strip", TabStrip)
+
     def add_widget(self, widget: Any) -> None:
-        self.chat.mount(widget)
+        try:
+            self.chat.mount(widget)
+        except NoMatches:  # pragma: no cover - la app ya se está cerrando
+            return
+        except Exception as exc:  # noqa: BLE001 - nunca debe romper el chat
+            self.log.warning("No se pudo montar el widget: %s", exc)
+            return
         self.call_after_refresh(self._scroll_to_end)
 
     def _scroll_to_end(self) -> None:
@@ -246,8 +434,32 @@ class KliApp(App[None]):
         except Exception as exc:  # noqa: BLE001 - el scroll nunca debe romper el chat
             self.log.warning("No se pudo hacer scroll al final: %s", exc)
 
+    def _scroll_pane(self, pane: VerticalScroll) -> None:
+        try:
+            pane.scroll_end(animate=False)
+        except Exception as exc:  # noqa: BLE001 - idem con las ventanas de subagente
+            self.log.warning("No se pudo hacer scroll al final: %s", exc)
+
     def add_system(self, text: str, error: bool = False) -> None:
         self.add_widget(SystemNote(text, error=error))
+
+    def add_error(self, title: str, detail: str = "", hints: Sequence[str] = ()) -> None:
+        """Error con salida: qué pasó, el detalle y qué hacer al respecto."""
+        self.add_widget(ErrorNote(title, detail, hints))
+
+    def add_api_error(self, exc: ApiError, action: str) -> None:
+        """Error de la API con pistas según el código de respuesta."""
+        self.add_error(
+            f"No se pudo {action}",
+            f"El servidor respondió **{exc.status}**: {exc.detail}",
+            _api_hints(exc),
+        )
+
+    def _drop_welcome(self) -> None:
+        """El splash es solo de inicio: al hablar, deja de ocupar pantalla."""
+        if self._welcome is not None:
+            self._welcome.remove()
+            self._welcome = None
 
     @on(Input.Submitted, "#prompt")
     def _on_submit(self, event: Input.Submitted) -> None:
@@ -268,35 +480,31 @@ class KliApp(App[None]):
     async def _run_turn(self, text: str) -> None:
         self._busy = True
         self.set_busy(True)
-        self.set_status("pensando…", theme.ACCENT2)
-        self._reply = AgentMessage()
-        # hay que esperar al montaje: si no, el Markdown se actualiza sin estar
-        # en el DOM y la respuesta nunca se ve
-        await self.chat.mount(self._reply)
-        self._scroll_to_end()
+        self.set_status("pensando…", theme.ACCENT)
+        self._drop_welcome()
+        # la respuesta se monta cuando llega el primer texto: así queda detrás
+        # de las tools, en el orden real de la conversación
+        self._reply = None
         self._reasoning = None
         self._text = ""
         self._dirty = False
-        self._last_flush = time.monotonic()
+        self._last_flush = 0.0  # el primer token se pinta al instante
         self._cards = {}
         try:
             async for ev in self.client.stream_chat(self._body(text)):
                 await self._handle(ev)
             await self._flush_text(force=True)
         except ApiError as exc:
-            self.add_system(f"Error de la API: {exc.detail}", error=True)
-            self.set_status("error", theme.ERR)
+            self.add_api_error(exc, "enviar el mensaje")
+            self.set_status("error", theme.STYLE_ERR)
         except asyncio.CancelledError:
             await self._flush_text(force=True)
             self.add_system("Generación detenida.")
-            self.set_status("detenido", theme.WARN)
+            self.set_status("detenido", theme.STYLE_WARN)
             raise
         finally:
             self._busy = False
-            self.set_busy(False)
-            self.set_status("listo")
-            self.refresh_context()
-            self.query_one("#prompt", Input).focus()
+            self._settle_turn()
 
     @work(exclusive=False)
     async def _run_resume(self, decision: dict[str, Any]) -> None:
@@ -304,20 +512,34 @@ class KliApp(App[None]):
             return
         self._busy = True
         self.set_busy(True)
-        self.set_status("reanudando…", theme.ACCENT2)
+        self.set_status("reanudando…", theme.ACCENT)
         try:
             async for ev in self.client.stream_resume(self._body(""), decision):
                 await self._handle(ev)
         except ApiError as exc:
-            self.add_system(f"Error de la API: {exc.detail}", error=True)
+            self.add_api_error(exc, "reanudar la ejecución")
         except asyncio.CancelledError:
             self.add_system("Reanudación detenida.")
             raise
         finally:
             self._busy = False
+            self._settle_turn()
+
+    def _settle_turn(self) -> None:
+        """Deja la interfaz como debe quedar al acabar un turno.
+
+        Si la app se está cerrando, los widgets ya no existen: no es un error.
+        """
+        try:
             self.set_busy(False)
+            self.set_status("listo")
+            if self._reasoning is not None:
+                self._reasoning.flush()
+            self._finish_all_subagents()
             self.refresh_context()
-            self.query_one("#prompt", Input).focus()
+            self._focus_prompt()
+        except NoMatches:  # pragma: no cover - la app ya se está cerrando
+            pass
 
     def _body(self, message: str) -> dict[str, Any]:
         body: dict[str, Any] = {
@@ -337,6 +559,13 @@ class KliApp(App[None]):
 
     async def _handle(self, ev: ServerEvent) -> None:
         kind = ev.type
+        agent = ev.agent
+        if kind == "tool_start" and (ev.name or "") == "task":
+            # el agente principal lanza un subagente: se prepara su ventana
+            await self._note_task_start(ev)
+        if agent:
+            await self._handle_subagent(agent, ev)
+            return
         if kind == "meta":
             thread = ev.data.get("thread_id")
             if thread:
@@ -347,13 +576,15 @@ class KliApp(App[None]):
             self._dirty = True
             await self._flush_text()
         elif kind == "reasoning":
-            self._add_reasoning(ev.text)
+            await self._add_reasoning(ev.text)
         elif kind == "tool_start":
             card = ToolCard(ev.name or "tool", ev.agent)
             card.set_args(ev.data.get("payload"))
             key = str(ev.data.get("run_id") or ev.name or len(self._cards))
             self._cards[key] = card
-            self.add_widget(card)
+            # hay que esperar al montaje: la tool puede terminar antes de que
+            # la tarjeta esté en el DOM y su salida se perdería
+            await self.chat.mount(card)
         elif kind in {"tool_end", "tool_error"}:
             run_id = str(ev.data.get("run_id") or "")
             finished = self._cards.get(run_id)
@@ -363,6 +594,7 @@ class KliApp(App[None]):
                     finished.set_done(ev.text)
                 else:
                     finished.set_error(ev.text)
+            self._note_task_end(ev)
         elif kind == "usage":
             payload = ev.data.get("payload")
             if isinstance(payload, dict):
@@ -371,23 +603,210 @@ class KliApp(App[None]):
         elif kind == "interrupt":
             self._show_approvals(ev.data.get("payload"))
         elif kind == "error":
-            self.add_system(ev.text or "error desconocido en el servidor", error=True)
+            text = ev.text or "error desconocido en el servidor"
+            self.add_error("El agente se ha detenido", text, _error_hints(text))
+
+    # ---------------- subagentes ----------------
+    async def _note_task_start(self, ev: ServerEvent) -> None:
+        """El agente principal invoca a un subagente (`task`)."""
+        payload = ev.data.get("payload")
+        sub = payload.get("subagent_type") if isinstance(payload, dict) else None
+        if not sub:
+            return
+        name = str(sub)
+        run_id = str(ev.data.get("run_id") or "")
+        if run_id:
+            self._task_runs[run_id] = name
+        await self._ensure_subagent(name)
+
+    def _note_task_end(self, ev: ServerEvent) -> None:
+        """El subagente ha terminado (se acaba la llamada `task`)."""
+        if (ev.name or "") != "task":
+            return
+        run_id = str(ev.data.get("run_id") or "")
+        name = self._task_runs.pop(run_id, None)
+        if name:
+            self._finish_subagent(name, error=ev.type == "tool_error")
+
+    async def _ensure_subagent(self, name: str) -> _Conversation:
+        """Crea la ventana del subagente y su aviso en el chat principal.
+
+        Es idempotente. La ventana nace *cerrada*: el chat principal sigue a
+        la vista y es el aviso (con el spinner) el que lleva a ella al pulsarlo.
+        """
+        existing = self._subagents.get(name)
+        if existing is not None:
+            return existing
+
+        pane_id = self._unique_pane_id(name)
+        self._pane_ids[name] = pane_id
+        state = _Conversation(running=True, pane_id=pane_id, label=f"@{name}")
+        self._subagents[name] = state
+
+        self.tabs.add_tab(name, name)
+        self.tabs.set_state(name, "run")
+        loader = SubagentLoader(name)
+        self._loaders[name] = loader
+        self.add_widget(loader)
+
+        pane = VerticalScroll(id=pane_id, classes="subagent-pane")
+        state.container = pane
+        await self.panes.add_content(pane)
+        head = Text()
+        head.append("◆ ", style=f"bold {theme.ACCENT}")
+        head.append(f"subagente {name}", style=f"bold {theme.TEXT_HI}")
+        head.append("  ·  ventana propia", style=theme.FAINT)
+        await pane.mount(Static(head, classes="subagent-head"))
+        return state
+
+    def _unique_pane_id(self, name: str) -> str:
+        base = f"pane-{_slug(name)}"
+        pane_id = base
+        index = 2
+        while pane_id in self._pane_ids.values():
+            pane_id = f"{base}-{index}"
+            index += 1
+        return pane_id
+
+    async def _handle_subagent(self, name: str, ev: ServerEvent) -> None:
+        """Enruta un evento al subagente que lo originó."""
+        state = await self._ensure_subagent(name)
+        container = state.container
+        if container is None:
+            return
+        kind = ev.type
+        if kind == "token":
+            state.text += ev.text
+            state.dirty = True
+            await self._flush_conversation(state)
+        elif kind == "reasoning":
+            if state.reasoning is None:
+                state.reasoning = ReasoningPanel()
+                await container.mount(state.reasoning)
+            state.reasoning.append(ev.text)
+        elif kind == "tool_start":
+            card = ToolCard(ev.name or "tool", name)
+            card.set_args(ev.data.get("payload"))
+            key = str(ev.data.get("run_id") or ev.name or len(state.cards))
+            state.cards[key] = card
+            await container.mount(card)
+        elif kind in {"tool_end", "tool_error"}:
+            run_id = str(ev.data.get("run_id") or "")
+            finished = state.cards.get(run_id)
+            if finished is not None:
+                del state.cards[run_id]
+                if kind == "tool_end":
+                    finished.set_done(ev.text)
+                else:
+                    finished.set_error(ev.text)
+        elif kind == "error":
+            await container.mount(
+                SystemNote(f"subagente {name}: {ev.text or 'error'}", error=True)
+            )
+
+    def _finish_subagent(self, name: str, error: bool = False) -> None:
+        """Marca el subagente como terminado y para su spinner."""
+        state = self._subagents.get(name)
+        if state is None or not state.running:
+            return
+        state.running = False
+        if state.reasoning is not None:
+            state.reasoning.flush()
+        try:
+            self.tabs.set_state(name, "err" if error else "ok")
+        except NoMatches:  # pragma: no cover - la app ya se está cerrando
+            pass
+        loader = self._loaders.get(name)
+        if loader is not None:
+            if error:
+                loader.set_error()
+            else:
+                loader.set_done()
+
+    def _finish_all_subagents(self, error: bool = False) -> None:
+        for name, state in list(self._subagents.items()):
+            if state.running:
+                self._finish_subagent(name, error=error)
+
+    def _open_tab(self, key: str) -> None:
+        """Muestra la conversación principal o la ventana de un subagente.
+
+        `key` es la clave de la pestaña: `chat` o el nombre del subagente.
+        """
+        pane_id = "chat" if key == "chat" else self._pane_ids.get(key, key)
+        try:
+            self.panes.current = pane_id
+        except Exception:  # noqa: BLE001 - un id raro no debe romper la app
+            return
+        self._tab = pane_id
+        self.tabs.set_selected(key)
+        in_chat = pane_id == "chat"
+        self.query_one("#prompt", Input).display = in_chat
+        self.query_one("#prompt-mark").display = in_chat
+        note = self.query_one("#prompt-note", Static)
+        note.display = not in_chat
+        if in_chat:
+            self._focus_prompt()
+        else:
+            name = key if key != "chat" else "?"
+            note.update(
+                Text(
+                    f"subagente {name} · «chat» para escribir",
+                    style=theme.FAINT,
+                )
+            )
+
+    def _open_subagent(self, name: str) -> None:
+        if name not in self._subagents:
+            return
+        self._open_tab(name)
+
+    @on(SubagentLoader.Open)
+    def _on_loader_open(self, event: SubagentLoader.Open) -> None:
+        """El aviso del chat principal lleva a la ventana del subagente."""
+        event.stop()
+        self._open_subagent(event.name)
+
+    @on(TabChip.Pressed)
+    def _on_tab_pressed(self, event: TabChip.Pressed) -> None:
+        event.stop()
+        if event.key == "chat":
+            self._open_tab("chat")
+        else:
+            self._open_subagent(event.key)
 
     async def _flush_text(self, force: bool = False) -> None:
-        if not self._dirty or self._reply is None:
-            return
-        if not force and time.monotonic() - self._last_flush <= 0.08:
-            return
-        self._dirty = False
-        self._last_flush = time.monotonic()
-        await self._reply.set_text(self._text)
-        # el layout cambia al montar el markdown: el scroll va después del refresco
-        self.call_after_refresh(self._scroll_to_end)
+        await self._flush_conversation(self._main, force=force)
 
-    def _add_reasoning(self, text: str) -> None:
+    async def _flush_conversation(self, state: _Conversation, force: bool = False) -> None:
+        if not state.dirty:
+            return
+        if not force and time.monotonic() - state.last_flush <= 0.08:
+            return
+        state.dirty = False
+        state.last_flush = time.monotonic()
+        if state.reply is None:
+            # la respuesta se monta con el primer texto: así el chat sigue el
+            # orden real (razonamiento → tools → respuesta)
+            state.reply = AgentMessage(label=state.label)
+            container = state.container
+            if container is None:
+                return
+            await container.mount(state.reply)
+        await state.reply.set_text(state.text)
+        # el layout cambia al montar el markdown: el scroll va después del refresco
+        container = state.container
+        if container is None:
+            return
+        self.call_after_refresh(lambda: self._scroll_pane(container))
+
+
+    async def _add_reasoning(self, text: str) -> None:
+        """Añade razonamiento al panel (markdown en vivo)."""
         if self._reasoning is None:
             self._reasoning = ReasoningPanel()
-            self.add_widget(self._reasoning)
+            # hay que esperar al montaje: si no, el markdown se pierde
+            await self.chat.mount(self._reasoning)
         self._reasoning.append(text)
 
     def _show_approvals(self, payload: Any) -> None:
@@ -404,6 +823,8 @@ class KliApp(App[None]):
                     str(action.get("description", "")),
                 )
                 self.add_widget(panel)
+                # el foco pasa a la aprobación: `enter` acepta, `tab` va al otro botón
+                self.call_after_refresh(panel.focus_first)
 
     @on(ApprovalPanel.Approved)
     def _on_approved(self, event: ApprovalPanel.Approved) -> None:
@@ -419,13 +840,17 @@ class KliApp(App[None]):
 
     # ---------------- contexto ----------------
     def refresh_context(self) -> None:
+        try:
+            panel = self.query_one(ContextPanel)
+        except NoMatches:  # pragma: no cover - la app ya se está cerrando
+            return
         modes = {m.get("name"): m.get("description", "") for m in self.registry.get("modes", [])}
         skills = [s.get("name", "") for s in self.registry.get("skills", [])]
         counts: dict[str, int] = {}
         for tool in self.registry.get("tools", []):
             category = str(tool.get("category", "other"))
             counts[category] = counts.get(category, 0) + 1
-        self.query_one(ContextPanel).update_context(
+        panel.update_context(
             {
                 "mode": self.mode,
                 "modes": modes,
@@ -442,13 +867,33 @@ class KliApp(App[None]):
         )
 
     def set_status(self, text: str, style: str = theme.DIM) -> None:
-        self.query_one(StatusBar).set_status(text, style)
+        bar = self._status_bar()
+        if bar is not None:
+            bar.set_status(text, style)
 
     def set_right(self, text: str, style: str = theme.FAINT) -> None:
-        self.query_one(StatusBar).set_right(text, style)
+        bar = self._status_bar()
+        if bar is not None:
+            bar.set_right(text, style)
 
     def set_busy(self, busy: bool) -> None:
-        self.query_one(StatusBar).set_busy(busy)
+        bar = self._status_bar()
+        if bar is not None:
+            bar.set_busy(busy)
+
+    def _status_bar(self) -> StatusBar | None:
+        """La barra de estado, o `None` si la app ya se está cerrando."""
+        try:
+            return self.query_one(StatusBar)
+        except NoMatches:
+            return None
+
+    def _focus_prompt(self) -> None:
+        """Devuelve el foco al prompt (si la app sigue en pie)."""
+        try:
+            self.query_one("#prompt", Input).focus()
+        except NoMatches:  # pragma: no cover - la app ya se está cerrando
+            pass
 
     # ---------------- comandos ----------------
     async def _command(self, raw: str) -> None:
@@ -465,6 +910,8 @@ class KliApp(App[None]):
             self.add_system(HELP)
         elif cmd == "mode":
             await self._cmd_mode(args)
+        elif cmd == "user":
+            self._cmd_user(args)
         elif cmd == "skill":
             await self._cmd_skill(args)
         elif cmd == "skills":
@@ -523,6 +970,29 @@ class KliApp(App[None]):
         self.refresh_context()
         self.add_system(f"Modo → **{mode}**")
 
+    # ---------------- usuario ----------------
+    def _cmd_user(self, args: list[str]) -> None:
+        """`/user [nombre]` — muestra o cambia el usuario del cliente."""
+        if not args:
+            self.add_system(
+                f"Usuario: **{self.config.user}**\n\n"
+                "Es el valor de la cabecera `X-User-Id` con el que te identifica el "
+                "servidor (hilos, memoria, skills y proyectos son por usuario).\n\n"
+                "Cambiarlo: `/user <nombre>` · al arrancar: `KLI_USER=<nombre> kliccode` "
+                "· `kliccode --user <nombre>`.\n\n"
+                "Si el servidor tiene `API_KEYS` configuradas, manda la clave Bearer y "
+                "el usuario lo decide el servidor (la cabecera se ignora)."
+            )
+            return
+        user = args[0].strip()
+        if not user:
+            self.add_system("El usuario no puede estar vacío.", error=True)
+            return
+        self.config = replace(self.config, user=user)
+        self.client.set_user(user)
+        self.query_one(TopBar).set_user(user)
+        self.add_system(f"Usuario → **{user}**")
+
     # ---------------- skills ----------------
     async def _cmd_skill(self, args: list[str]) -> None:
         skills = [str(s.get("name")) for s in self.registry.get("skills", [])]
@@ -536,13 +1006,17 @@ class KliApp(App[None]):
             return
         if action == "delete":
             if len(args) < 2:
-                self.add_system("Uso: `/skill delete <nombre>`", error=True)
+                self.add_error(
+                    "Falta el nombre de la skill",
+                    "Uso: `/skill delete <nombre>`",
+                    ["Endpoint: `DELETE /api/v1/skills/{nombre}`"],
+                )
                 return
             name = args[1]
             try:
                 await self.client.delete_skill(name)
             except ApiError as exc:
-                self.add_system(f"No se pudo borrar la skill: {exc.detail}", error=True)
+                self.add_api_error(exc, "borrar la skill")
                 return
             self.skills.discard(name)
             await self._reload_registry()
@@ -574,10 +1048,10 @@ class KliApp(App[None]):
             else:
                 del args[index]
         if len(args) < 3:
-            self.add_system(
-                'Uso: `/skill create <nombre> "<descripción>" "<instrucciones>" [--tools a,b]`\n\n'
-                "Endpoint: `POST /api/v1/skills`",
-                error=True,
+            self.add_error(
+                "Faltan datos para crear la skill",
+                'Uso: `/skill create <nombre> "<descripción>" "<instrucciones>" [--tools a,b]`',
+                ["Endpoint: `POST /api/v1/skills`"],
             )
             return
         name = args[0]
@@ -592,7 +1066,7 @@ class KliApp(App[None]):
         try:
             await self.client.create_skill(body)
         except ApiError as exc:
-            self.add_system(f"No se pudo crear la skill: {exc.detail}", error=True)
+            self.add_api_error(exc, "crear la skill")
             return
         await self._reload_registry()
         self.add_system(f"Skill **{name}** creada → `POST /api/v1/skills`")
@@ -632,13 +1106,17 @@ class KliApp(App[None]):
             return
         if action == "delete":
             if len(args) < 2:
-                self.add_system("Uso: `/provider delete <nombre>`", error=True)
+                self.add_error(
+                    "Falta el nombre del proveedor",
+                    "Uso: `/provider delete <nombre>`",
+                    ["Endpoint: `DELETE /api/v1/providers/{nombre}`"],
+                )
                 return
             name = args[1]
             try:
                 await self.client.delete_provider(name)
             except ApiError as exc:
-                self.add_system(f"No se pudo borrar el proveedor: {exc.detail}", error=True)
+                self.add_api_error(exc, "borrar el proveedor")
                 return
             if self.provider == name:
                 self.provider = None
@@ -662,10 +1140,10 @@ class KliApp(App[None]):
     async def _create_provider(self, args: list[str]) -> None:
         """`/provider create <nombre> <openai|anthropic> [base_url] [modelo] [api_key]`"""
         if len(args) < 2:
-            self.add_system(
-                "Uso: `/provider create <nombre> <openai|anthropic> [base_url] [modelo] [api_key]`\n\n"
-                "Endpoint: `POST /api/v1/providers`",
-                error=True,
+            self.add_error(
+                "Faltan datos para crear el proveedor",
+                "Uso: `/provider create <nombre> <openai|anthropic> [base_url] [modelo] [api_key]`",
+                ["Endpoint: `POST /api/v1/providers`"],
             )
             return
         name, kind = args[0], args[1]
@@ -682,7 +1160,7 @@ class KliApp(App[None]):
         try:
             await self.client.create_provider(body)
         except ApiError as exc:
-            self.add_system(f"No se pudo crear el proveedor: {exc.detail}", error=True)
+            self.add_api_error(exc, "crear el proveedor")
             return
         await self._reload_registry()
         self.add_system(f"Proveedor **{name}** creado → `POST /api/v1/providers`")
@@ -726,7 +1204,7 @@ class KliApp(App[None]):
         try:
             models = await self.client.models(provider)
         except ApiError as exc:
-            self.add_system(f"No se pudieron listar los modelos: {exc.detail}", error=True)
+            self.add_api_error(exc, "listar los modelos")
             return
         if not models:
             self.add_system(
@@ -760,13 +1238,17 @@ class KliApp(App[None]):
             return
         if action == "delete":
             if len(args) < 2:
-                self.add_system("Uso: `/project delete <nombre>`", error=True)
+                self.add_error(
+                    "Falta el nombre del proyecto",
+                    "Uso: `/project delete <nombre>`",
+                    ["Endpoint: `DELETE /api/v1/projects/{nombre}`"],
+                )
                 return
             name = args[1]
             try:
                 await self.client.delete_project(name)
             except ApiError as exc:
-                self.add_system(f"No se pudo borrar el proyecto: {exc.detail}", error=True)
+                self.add_api_error(exc, "borrar el proyecto")
                 return
             if self.project == name:
                 self.project = None
@@ -797,21 +1279,29 @@ class KliApp(App[None]):
     async def _create_project(self, args: list[str], importing: bool = False) -> None:
         """`/project create <nombre> [ruta]` · `/project import <nombre> <ruta>`"""
         if importing and len(args) < 2:
-            self.add_system(
-                "Uso: `/project import <nombre> <ruta>`\n\n"
-                "La carpeta se usa tal cual (con todos sus archivos) como workspace del "
-                "proyecto. Tiene que estar dentro de las raíces permitidas.\n\n"
-                "Endpoint: `POST /api/v1/projects`",
-                error=True,
+            self.add_error(
+                "Falta la ruta de la carpeta",
+                "Uso: `/project import <nombre> <ruta>`",
+                [
+                    (
+                        "La carpeta se usa tal cual (con todos sus archivos) como workspace "
+                        "del proyecto. Tiene que estar dentro de las raíces permitidas."
+                    ),
+                    "Endpoint: `POST /api/v1/projects`",
+                ],
             )
             return
         if not args:
-            self.add_system(
-                "Uso: `/project create <nombre> [ruta]`\n\n"
-                "Sin ruta crea una carpeta nueva en el workspace del servidor; "
-                "con ruta usa esa carpeta existente tal cual.\n\n"
-                "Endpoint: `POST /api/v1/projects`",
-                error=True,
+            self.add_error(
+                "Falta el nombre del proyecto",
+                "Uso: `/project create <nombre> [ruta]`",
+                [
+                    (
+                        "Sin ruta crea una carpeta nueva en el workspace del servidor; "
+                        "con ruta usa esa carpeta existente tal cual."
+                    ),
+                    "Endpoint: `POST /api/v1/projects`",
+                ],
             )
             return
         name = args[0]
@@ -819,10 +1309,14 @@ class KliApp(App[None]):
         try:
             project = await self.client.create_project(name, path)
         except ApiError as exc:
-            detail = exc.detail
+            hints = _api_hints(exc)
             if exc.status == 403:
-                detail = f"{detail}\n\nRaíces permitidas: {self._import_roots_text()}"
-            self.add_system(f"No se pudo crear el proyecto: {detail}", error=True)
+                hints.insert(0, f"Raíces permitidas: {self._import_roots_text()}")
+            self.add_error(
+                "No se pudo crear el proyecto",
+                f"El servidor respondió **{exc.status}**: {exc.detail}",
+                hints,
+            )
             return
         await self._reload_registry()
         root = project.get("root", "")
@@ -849,10 +1343,14 @@ class KliApp(App[None]):
         try:
             data = await self.client.browse_projects(path)
         except ApiError as exc:
-            detail = exc.detail
+            hints = _api_hints(exc)
             if exc.status == 403:
-                detail = f"{detail}\n\nRaíces permitidas: {self._import_roots_text()}"
-            self.add_system(f"No se pudo listar la carpeta: {detail}", error=True)
+                hints.insert(0, f"Raíces permitidas: {self._import_roots_text()}")
+            self.add_error(
+                "No se pudo listar la carpeta",
+                f"El servidor respondió **{exc.status}**: {exc.detail}",
+                hints,
+            )
             return
         current = str(data.get("path", ""))
         dirs = list(data.get("dirs") or [])
@@ -915,26 +1413,32 @@ class KliApp(App[None]):
         action = args[0].lower()
         if action == "add":
             if len(args) < 3:
-                self.add_system(
-                    "Uso: `/mcp add <nombre> <url>`\n\nEndpoint: `POST /api/v1/mcp`", error=True
+                self.add_error(
+                    "Faltan el nombre y la URL del servidor MCP",
+                    "Uso: `/mcp add <nombre> <url>`",
+                    ["Endpoint: `POST /api/v1/mcp`"],
                 )
                 return
             try:
                 await self.client.create_mcp({"name": args[1], "url": args[2]})
             except ApiError as exc:
-                self.add_system(f"No se pudo añadir el servidor MCP: {exc.detail}", error=True)
+                self.add_api_error(exc, "añadir el servidor MCP")
                 return
             await self._reload_registry()
             self.add_system(f"Servidor MCP **{args[1]}** añadido → `POST /api/v1/mcp`")
             return
         if action == "delete":
             if len(args) < 2:
-                self.add_system("Uso: `/mcp delete <nombre>`", error=True)
+                self.add_error(
+                    "Falta el nombre del servidor MCP",
+                    "Uso: `/mcp delete <nombre>`",
+                    ["Endpoint: `DELETE /api/v1/mcp/{nombre}`"],
+                )
                 return
             try:
                 await self.client.delete_mcp(args[1])
             except ApiError as exc:
-                self.add_system(f"No se pudo borrar el servidor MCP: {exc.detail}", error=True)
+                self.add_api_error(exc, "borrar el servidor MCP")
                 return
             await self._reload_registry()
             self.add_system(f"Servidor MCP **{args[1]}** borrado → `DELETE /api/v1/mcp/{args[1]}`")
@@ -945,7 +1449,7 @@ class KliApp(App[None]):
         try:
             servers = await self.client.list_mcp()
         except ApiError as exc:
-            self.add_system(f"No se pudieron listar los servidores MCP: {exc.detail}", error=True)
+            self.add_api_error(exc, "listar los servidores MCP")
             return
         if not servers:
             self.add_system(
@@ -970,10 +1474,10 @@ class KliApp(App[None]):
         action = args[0].lower()
         if action == "add":
             if len(args) < 4:
-                self.add_system(
-                    'Uso: `/http add <nombre> "<descripción>" <url> [host[,host]]`\n\n'
-                    "Endpoint: `POST /api/v1/tools/http`",
-                    error=True,
+                self.add_error(
+                    "Faltan datos para crear la tool HTTP",
+                    'Uso: `/http add <nombre> "<descripción>" <url> [host[,host]]`',
+                    ["Endpoint: `POST /api/v1/tools/http`"],
                 )
                 return
             name, description, url = args[1], args[2], args[3]
@@ -984,19 +1488,23 @@ class KliApp(App[None]):
             try:
                 await self.client.create_http_tool(body)
             except ApiError as exc:
-                self.add_system(f"No se pudo crear la tool HTTP: {exc.detail}", error=True)
+                self.add_api_error(exc, "crear la tool HTTP")
                 return
             await self._reload_registry()
             self.add_system(f"Tool HTTP **{name}** creada → `POST /api/v1/tools/http`")
             return
         if action == "delete":
             if len(args) < 2:
-                self.add_system("Uso: `/http delete <nombre>`", error=True)
+                self.add_error(
+                    "Falta el nombre de la tool HTTP",
+                    "Uso: `/http delete <nombre>`",
+                    ["Endpoint: `DELETE /api/v1/tools/http/{nombre}`"],
+                )
                 return
             try:
                 await self.client.delete_http_tool(args[1])
             except ApiError as exc:
-                self.add_system(f"No se pudo borrar la tool HTTP: {exc.detail}", error=True)
+                self.add_api_error(exc, "borrar la tool HTTP")
                 return
             await self._reload_registry()
             self.add_system(f"Tool HTTP **{args[1]}** borrada → `DELETE /api/v1/tools/http/{args[1]}`")
@@ -1007,7 +1515,7 @@ class KliApp(App[None]):
         try:
             tools = await self.client.list_http_tools()
         except ApiError as exc:
-            self.add_system(f"No se pudieron listar las tools HTTP: {exc.detail}", error=True)
+            self.add_api_error(exc, "listar las tools HTTP")
             return
         if not tools:
             self.add_system(
@@ -1024,7 +1532,7 @@ class KliApp(App[None]):
         try:
             memories = await self.client.list_memories()
         except ApiError as exc:
-            self.add_system(f"No se pudieron listar los recuerdos: {exc.detail}", error=True)
+            self.add_api_error(exc, "listar los recuerdos")
             return
         if not memories:
             self.add_system(
@@ -1049,12 +1557,16 @@ class KliApp(App[None]):
         action = args[0].lower()
         if action == "delete":
             if len(args) < 2:
-                self.add_system("Uso: `/memory delete <clave>`", error=True)
+                self.add_error(
+                    "Falta la clave del recuerdo",
+                    "Uso: `/memory delete <clave>`",
+                    ["Endpoint: `DELETE /api/v1/memories/{clave}`"],
+                )
                 return
             try:
                 await self.client.delete_memory(args[1])
             except ApiError as exc:
-                self.add_system(f"No se pudo borrar el recuerdo: {exc.detail}", error=True)
+                self.add_api_error(exc, "borrar el recuerdo")
                 return
             self.add_system(f"Recuerdo **{args[1]}** borrado → `DELETE /api/v1/memories/{args[1]}`")
             return
@@ -1065,7 +1577,7 @@ class KliApp(App[None]):
         try:
             threads = await self.client.threads()
         except ApiError as exc:
-            self.add_system(f"No se pudieron listar los hilos: {exc.detail}", error=True)
+            self.add_api_error(exc, "listar los hilos")
             return
         if not threads:
             self.add_system("No hay hilos guardados. Empieza uno con `/new`.")
@@ -1089,18 +1601,26 @@ class KliApp(App[None]):
         action = args[0].lower()
         if action == "open":
             if len(args) < 2:
-                self.add_system("Uso: `/thread open <id>`", error=True)
+                self.add_error(
+                    "Falta el id del hilo",
+                    "Uso: `/thread open <id>`",
+                    ["Endpoint: `GET /api/v1/threads/{id}/messages`"],
+                )
                 return
             await self._open_thread(args[1])
             return
         if action == "delete":
             if len(args) < 2:
-                self.add_system("Uso: `/thread delete <id>`", error=True)
+                self.add_error(
+                    "Falta el id del hilo",
+                    "Uso: `/thread delete <id>`",
+                    ["Endpoint: `DELETE /api/v1/threads/{id}`"],
+                )
                 return
             try:
                 await self.client.delete_thread(args[1])
             except ApiError as exc:
-                self.add_system(f"No se pudo borrar el hilo: {exc.detail}", error=True)
+                self.add_api_error(exc, "borrar el hilo")
                 return
             if self.thread_id == args[1]:
                 self.thread_id = None
@@ -1113,7 +1633,7 @@ class KliApp(App[None]):
         try:
             messages = await self.client.thread_messages(thread_id)
         except ApiError as exc:
-            self.add_system(f"No se pudo abrir el hilo: {exc.detail}", error=True)
+            self.add_api_error(exc, "abrir el hilo")
             return
         self._clear_chat()
         self.thread_id = thread_id
@@ -1159,9 +1679,10 @@ class KliApp(App[None]):
         self._reply = None
         self._reasoning = None
         self._cards = {}
+        self._reset_subagents()
         self._clear_chat()
         self.set_right("")
-        self.add_system("Hilo nuevo ✨")
+        self.add_system("Hilo nuevo")
 
     def _clear_chat(self) -> None:
         """Vacía la conversación visible (no toca lo guardado en el servidor)."""
@@ -1171,6 +1692,20 @@ class KliApp(App[None]):
         self._reply = None
         self._reasoning = None
         self._cards = {}
+
+    def _reset_subagents(self) -> None:
+        """Cierra todas las ventanas de subagente (hilo nuevo)."""
+        for state in self._subagents.values():
+            if state.container is not None:
+                state.container.remove()
+        for name in list(self._subagents):
+            self.tabs.remove_tab(name)
+        self._subagents.clear()
+        self._loaders.clear()
+        self._task_runs.clear()
+        self._pane_ids.clear()
+        self.tabs.set_selected("chat")
+        self._open_tab("chat")
 
     async def _reload_registry(self) -> None:
         """Vuelve a pedir el registro tras un cambio (para que la UI esté al día)."""
@@ -1200,7 +1735,7 @@ class KliApp(App[None]):
                 await self.client.cancel(self.thread_id)
             except ApiError:
                 pass
-        self.set_status("detenido", theme.WARN)
+        self.set_status("detenido", theme.STYLE_WARN)
 
     def action_palette(self) -> None:
         self.push_screen(PaletteScreen(self._palette_items()), self._on_palette)
@@ -1225,19 +1760,20 @@ class KliApp(App[None]):
             items.append((f"provider:{name}", f"{mark} proveedor {name}", str(provider.get("kind", ""))))
         items.extend(
             [
-                ("action:new", "✦ hilo nuevo", "empieza una conversación limpia"),
-                ("action:clear", "✧ limpiar pantalla", "borra la conversación visible"),
-                ("action:projects", "▤ proyectos", "crear/listar/borrar proyectos (POST /api/v1/projects)"),
+                ("action:new", "+ hilo nuevo", "empieza una conversación limpia"),
+                ("action:clear", "- limpiar pantalla", "borra la conversación visible"),
+                ("action:projects", "▦ proyectos", "crear/listar/borrar proyectos (POST /api/v1/projects)"),
                 ("action:skills", "◈ skills", "crear/listar/borrar skills (POST /api/v1/skills)"),
-                ("action:providers", "⚙ proveedores", "crear/listar proveedores (POST /api/v1/providers)"),
+                ("action:providers", "▤ proveedores", "crear/listar proveedores (POST /api/v1/providers)"),
                 ("action:models", "≡ modelos", "listar modelos (GET /api/v1/models)"),
-                ("action:tools", "⚒ herramientas", "listar tools disponibles"),
-                ("action:http", "⇄ tools HTTP", "gestionar tools HTTP (POST /api/v1/tools/http)"),
+                ("action:tools", "▥ herramientas", "listar tools disponibles"),
+                ("action:http", "» tools HTTP", "gestionar tools HTTP (POST /api/v1/tools/http)"),
                 ("action:mcp", "⧉ servidores MCP", "gestionar MCP (POST /api/v1/mcp)"),
-                ("action:memories", "★ recuerdos", "memoria a largo plazo (GET /api/v1/memories)"),
+                ("action:memories", "◆ recuerdos", "memoria a largo plazo (GET /api/v1/memories)"),
                 ("action:threads", "☰ hilos", "ver/abrir/borrar hilos (GET /api/v1/threads)"),
+                ("action:user", "◍ usuario", "ver o cambiar el usuario (X-User-Id)"),
                 ("action:help", "? ayuda", "lista los comandos"),
-                ("action:quit", "⏻ salir", "cierra kliccode"),
+                ("action:quit", "× salir", "cierra kliccode"),
             ]
         )
         return items
@@ -1288,11 +1824,13 @@ class KliApp(App[None]):
             self.run_worker(self._cmd_memories([]))
         elif choice == "action:threads":
             self.run_worker(self._cmd_threads([]))
+        elif choice == "action:user":
+            self._cmd_user([])
         elif choice == "action:help":
             self.add_system(HELP)
         elif choice == "action:quit":
             self.exit()
-        self.query_one("#prompt", Input).focus()
+        self._focus_prompt()
 
     async def on_unmount(self) -> None:
         await self.client.aclose()

@@ -18,3 +18,7 @@ data/
 workspace/
 projects/
 .env.bak
+.ruff_cache/
+.mypy_cache/
+projects/
+workspace/

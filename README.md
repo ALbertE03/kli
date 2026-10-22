@@ -73,42 +73,79 @@ Variables del cliente (en el host o dentro del contenedor):
 
 También por línea de comandos: `kliccode --url http://servidor:8000 --user ana`.
 
+El CLI **lee el `.env` del proyecto** (si existe), así que ahí puedes dejar
+`KLI_USER`, `KLI_API_URL` y `KLI_API_KEY` sin repetirlo cada vez.
+
 ## El CLI
 
 ```
-◆ KLI  agentic harness        ● http://127.0.0.1:8000 · user alberto · v0.1.0
-┌ contexto ─────────┐┌ conversación ───────────────────────────────┐
-│ MODO              ││                                              │
-│  ◆ build          ││  ▌corre los tests de la api y dime…          │
-│ SKILLS            ││                                              │
-│  ✓ investigacion  ││  ▶ 🧠 razonamiento                            │
-│  · depuracion     ││                                              │
-│ PROYECTO          ││  ▼ ✓ terminal  listo                         │
-│  ◆ workspace      ││    $ uv run pytest -q tests/test_api.py       │
-│ MODELO            ││    ........                     [100%]        │
-│  anthropic/sonnet ││    8 passed in 9.93s                          │
-│ HERRAMIENTAS      ││                                              │
-│  21  read:12 …    ││  ▼ ✓ code_search  listo                      │
-│ TOKENS            ││    pattern      def create_app                │
-│  in 1842  out 96  ││    glob         *.py                         │
-└───────────────────┘│                                              │
-                     │ > Escribe tu mensaje…   /help                │
-                     └──────────────────────────────────────────────┘
+  ◆ kliccode  agentic harness    ● http://127.0.0.1:8000 · user anonymous · v0.1.0
+────────────────────────────────────────────────────────────────────────────────────
+                               │   chat
+                               │────────────────────────────────────────────────────
+ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈    │
+ MODO                          │
+   ◆ build                     │  ▌ corre los tests de la api y dime
+                               │
+ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈    │  ◆ assistant
+ SKILLS                        │     ▶ razonamiento
+   ✓ investigacion             │  ╭──────────────────────────────────────────╮
+   · depuracion                │  │  ▼ ✓ terminal · listo                    │
+                               │  │    $ pytest -q tests/test_api.py         │
+ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈    │  │                                          │
+ PROYECTO                      │  │  ........                     [100%]     │
+   ◆ workspace por defecto     │  │  8 passed in 9.93s                       │
+                               │  │                                          │
+ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈    │  ╰──────────────────────────────────────────╯
+ MODELO                        │
+   anthropic / sonnet          │
+                               │
+ ┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈    │  ╭──────────────────────────────────────────────╮
+ HERRAMIENTAS                  │  │❯  Escribe tu mensaje…   (/help)              │
+   2  exec:1 · read:1          │  ╰──────────────────────────────────────────────╯
+                               │
+● pensando…                                                                  hilo t1
 ```
 
-- **Streaming en vivo**: tokens del assistant, razonamiento plegable (`🧠`),
+- **Streaming en vivo**: tokens del assistant, razonamiento plegable (`▶`),
   tarjetas de tool con argumentos legibles (nunca un volcado de dict) y la
   salida, con contador de tokens.
+- **Markdown en vivo**: la respuesta, el razonamiento y la salida de las tools
+  se dibujan como markdown (títulos, negritas, listas, tablas y bloques de
+  código) mientras llegan, no en crudo al final.
+- **Flujo de chat como el de un editor**: usuario → razonamiento → tools →
+  respuesta, con cada llamada resumida en una línea (`✓ terminal  pytest -q`)
+  y el detalle debajo.
+- **El pensamiento se ve siempre**: el razonamiento del modelo llega al
+  cliente (los proxies OpenAI-compatible lo mandan en `delta.reasoning_content`)
+  y se muestra desplegado, sin cajas ni distractions.
+- **Pantalla de inicio**: el logo `kliccode` en grande, centrado, con una letra
+  que late; al escribir, el chat empieza limpio.
 - **Aprobaciones**: cuando el agente pide permiso, aparece una tarjeta con la
   tool y sus argumentos → *Aprobar* / *Rechazar* → la ejecución continúa.
+- **Errores con salida**: un error nunca es una línea muerta: dice qué pasó, el
+  código que devolvió el servidor y **qué hacer** (`401` → credenciales,
+  `404` → no existe, `429` → espera, `5xx` → mira los logs).
 - **Contexto lateral**: modo, skills activas, proyecto, modelo, tools por
   categoría y tokens de la conversación.
 - **Paleta de comandos** (`ctrl+p`): modos, skills, proyectos y acciones.
+- **Autocompletado** (`tab`): completa comandos (`/mo` → `/mode`) y sus
+  argumentos (`/mode ` → `plan`, `/skill ` → `investigacion`); repetido,
+  recorre las opciones.
+- **Un solo lenguaje de formas** (todo en grises, el color nunca decide):
+  `▌` tú · `◆` agente · `◐` en curso · `✓` listo · `✗` error · `·` aviso ·
+  `▶` plegable. Las pestañas son pastillas y la activa va invertida.
+- **Ventanas de subagente**: cuando el agente lanza un subagente, se abre su
+  propia pestaña (arriba, junto a `chat`). En la conversación original queda
+  un aviso con spinner: al pulsarlo saltas a esa ventana, que hasta entonces
+  permanece cerrada. Cada subagente habla en su ventana: su texto, su
+  razonamiento y sus tools.
 
 ### Atajos
 
 | atajo | acción |
 |---|---|
+| `tab` | completa el comando o su argumento (repetido, recorre opciones) |
 | `ctrl+p` | paleta de comandos |
 | `ctrl+n` | hilo nuevo |
 | `ctrl+l` | limpiar la pantalla |
@@ -130,6 +167,7 @@ aquí**, y cada mensaje indica el endpoint que se está usando.
 | `/provider <nombre>` | `POST /api/v1/chat/stream` (`provider`) |
 | `/skill <nombre>` | `POST /api/v1/chat/stream` (`skills`) |
 | `/project <nombre\|none>` | `POST /api/v1/chat/stream` (`project`) |
+| `/user [nombre]` | cabecera `X-User-Id` |
 | `/new` · `/clear` · `/quit` | — |
 
 **Proyectos** (el workspace del agente)
@@ -240,10 +278,34 @@ Lo imprescindible:
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | credenciales del proveedor |
 | `OPENAI_MODEL` / `ANTHROPIC_MODEL` | modelo por defecto (p. ej. `gpt-6-luna`) |
 | `TEMPERATURE` | vacío = **no mandarlo** (gpt-6-luna y otros modelos lo rechazan) |
+| `REASONING_EFFORT` | `low`\|`medium`\|`high`; vacío = no mandarlo. Con valor se usa el API de Responses y el cliente muestra el resumen del pensamiento |
 | `SECRET_KEY` | clave Fernet (32 bytes url-safe base64) para cifrar lo que se guarda. Genera una con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CHECKPOINT_BACKEND` · `STORE_BACKEND` | `memory` \| `sqlite` \| `postgres` |
 | `ENABLE_EXEC` | habilita `terminal`, `python_repl` y `run_tests` (aprobación humana) |
 | `API_KEYS` | `clave1:alice,clave2:bob`; vacío = desarrollo, el usuario va por cabecera |
+| `KLI_USER` | usuario que manda el CLI en `X-User-Id` (por defecto `anonymous`) |
+| `KLI_API_URL` · `KLI_API_KEY` | a qué servidor se conecta el CLI y con qué clave |
+
+### Por qué sale `anonymous`
+
+El CLI manda la cabecera `X-User-Id` y, si no le dices otra cosa, vale
+`anonymous` (el servidor la usa para separar hilos, memoria, skills y
+proyectos de cada usuario). Se cambia de tres maneras:
+
+```bash
+KLI_USER=tu-usuario make cli      # al arrancar
+kliccode --user tu-usuario        # en la línea de comandos
+```
+
+y en caliente, desde la conversación:
+
+```
+/user                 # muestra con qué usuario estás
+/user tu-usuario     # cambia el usuario de las siguientes peticiones
+```
+
+Si el servidor tiene `API_KEYS` configuradas, manda la clave Bearer y el
+usuario lo decide el servidor (la cabecera se ignora).
 
 ## Desarrollo
 

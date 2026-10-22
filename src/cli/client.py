@@ -110,6 +110,10 @@ class HarnessClient:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    def set_user(self, user: str) -> None:
+        """Cambia el usuario de las peticiones (cabecera `X-User-Id`)."""
+        self._client.headers["X-User-Id"] = user
+
     # ------------- JSON -------------
     async def _get(self, route: str, **params: Any) -> Any:
         try:

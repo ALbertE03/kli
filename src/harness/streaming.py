@@ -59,7 +59,7 @@ class EventMapper:
             chunk = data.get("chunk")
             if chunk is None:
                 return []
-            text, reasoning = split_chunk(chunk.content)
+            text, reasoning = split_chunk(chunk)
             out: list[StreamEvent] = []
             if reasoning:
                 out.append(StreamEvent(type="reasoning", agent=agent, text=reasoning))
