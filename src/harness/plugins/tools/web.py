@@ -29,7 +29,7 @@ class SearchHit(BaseModel):
 async def search_web(query: str, limit: int = 5) -> list[SearchHit]:
     s = get_settings()
     if s.tavily_api_key:
-        from tavily import AsyncTavilyClient
+        from tavily import AsyncTavilyClient  # type: ignore[import-untyped]
 
         client = AsyncTavilyClient(api_key=s.tavily_api_key.get_secret_value())
         data = await client.search(query, max_results=limit)

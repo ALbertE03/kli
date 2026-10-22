@@ -12,7 +12,7 @@ from langchain_core.tools import BaseTool
 from harness.compat import create_agent_compat
 from harness.memory import MemoryRuntime
 from harness.models import build_chat_model
-from harness.plugins.tools.codigo import make_fs_tools
+from harness.plugins.tools.codigo import make_exec_tools, make_fs_tools
 from harness.plugins.tools.dev import make_dev_tools
 from harness.projects import ProjectRegistry
 from harness.prompts import build_system_prompt
@@ -48,7 +48,7 @@ class AgentRequest:
 
 def _scope_project(tools: list[BaseTool], root: str) -> list[BaseTool]:
     """Sustituye las tools de archivos/código por versiones confinadas a la raíz del proyecto."""
-    scoped = {**make_fs_tools(root), **make_dev_tools(root)}
+    scoped = {**make_fs_tools(root), **make_dev_tools(root), **make_exec_tools(root)}
     return [scoped.get(t.name, t) for t in tools]
 
 

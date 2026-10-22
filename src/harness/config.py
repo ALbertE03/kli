@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     secret_key: SecretStr | None = None
     cors_origins: str = "http://localhost:3000"
     enable_exec: bool = False
+    # En producción, el exec (terminal/python_repl) no está aislado: sin esta
+    # bandera no se registra. El directorio de trabajo sí queda confinado.
+    allow_unsandboxed_exec: bool = False
 
     # --- Herramientas ---
     tavily_api_key: SecretStr | None = None

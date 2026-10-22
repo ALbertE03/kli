@@ -21,6 +21,25 @@ def content_to_text(content: Any) -> str:
     return "" if content is None else str(content)
 
 
+def cached_tokens(usage: Any) -> int:
+    """Tokens de entrada que sirvieron de caché (no se cobran enterhos).
+
+    OpenAI y Anthropic los reportan igual: `usage_metadata["input_token_details"]
+    ["cache_read"]`. Sin esto no se puede saber si el prompt se está cacheando
+    (y si ahorrar tokens de entrada sirve de algo).
+    """
+    if not isinstance(usage, dict):
+        return 0
+    details = usage.get("input_token_details") or usage.get("input_tokens_details") or {}
+    if not isinstance(details, dict):
+        return 0
+    for key in ("cache_read", "cached_tokens"):
+        value = details.get(key)
+        if isinstance(value, int) and value > 0:
+            return value
+    return 0
+
+
 def _block_text(block: Any) -> str:
     """Texto de un bloque de razonamiento, sea str, dict o lista de bloques.
 

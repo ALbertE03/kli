@@ -118,6 +118,9 @@ def _format_args(payload: Any) -> list[tuple[str, str]]:
 
 SHELL_KEYS = ("command", "cmd", "script", "shell", "code")
 SHELL_TOOLS = ("terminal", "run_tests", "python_repl", "bash", "sh")
+# Tools que ejecutan código en el host: el cwd está confinado, pero no hay
+# aislamiento (el proceso ve la máquina entera).
+UNSANDBOXED_TOOLS = ("terminal", "python_repl", "run_tests")
 
 
 def _set_title(collapsible: Collapsible, text: Text) -> None:
@@ -378,6 +381,13 @@ class ContextPanel(Static):
         text.append("   out ", style=theme.ACCENT2)
         text.append(str(usage.get("output_tokens", 0)), style=theme.TEXT)
         text.append("\n")
+        cached = int(usage.get("cached_tokens", 0) or 0)
+        if cached:
+            # lo que sirvió de caché no se cobra enterho: es la cifra que dice
+            # si el prompt se está cacheando
+            text.append("  cache ", style=theme.ACCENT2)
+            text.append(str(cached), style=theme.TEXT)
+            text.append("\n")
 
         self.update(text)
 
@@ -813,6 +823,10 @@ class ApprovalPanel(Vertical):
         title.append(f"  ·  {tool}", style=theme.DIM)
         self._title = Static(title)
 
+        # Las tools de ejecución no están aisladas: el comando ve el host
+        # entero. El aviso va en la tarjeta, que es donde se decide.
+        self._warning = Static(Text("", style=theme.STYLE_WARN))
+
         # la descripción la escribe el modelo: puede venir en markdown
         detail = Text()
         if description:
@@ -840,6 +854,16 @@ class ApprovalPanel(Vertical):
             yield Static(self._detail)
         else:
             yield Static(self._detail)
+        if self._tool in UNSANDBOXED_TOOLS:
+            warning = Text()
+            warning.append("! ", style=theme.STYLE_WARN)
+            warning.append(
+                "Se ejecuta en el host, sin aislamiento: el comando puede "
+                "tocar cualquier archivo de la máquina.",
+                style=theme.STYLE_WARN,
+            )
+            self._warning.update(warning)
+            yield self._warning
         yield self._buttons
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

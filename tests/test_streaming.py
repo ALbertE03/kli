@@ -1,4 +1,9 @@
 from types import SimpleNamespace
+from typing import Any
+
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 from harness.streaming import EventMapper
 
@@ -161,3 +166,93 @@ def test_usage_accumulates():
     m.map(ev("on_chat_model_end", output=out))
     last = m.map(ev("on_chat_model_end", output=out))
     assert last[0].payload["total_tokens"] == 10
+
+
+def test_usage_reports_the_cached_tokens():
+    """Los tokens de caché se ven: sin ellos no se sabe si el prompt se cachea."""
+    m = EventMapper()
+    out = SimpleNamespace(
+        usage_metadata={
+            "input_tokens": 1200,
+            "output_tokens": 30,
+            "total_tokens": 1230,
+            "input_token_details": {"cache_read": 900},
+        }
+    )
+    last = m.map(ev("on_chat_model_end", output=out))
+    assert last[0].payload["cached_tokens"] == 900
+    assert last[0].payload["input_tokens"] == 1200
+
+
+# ---------------------------------------------------------------- e2e
+
+
+class _FakeModel(BaseChatModel):
+    """Modelo falso que emite un bloque de razonamiento y luego texto."""
+
+    @property
+    def _llm_type(self) -> str:
+        return "fake"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        return self
+
+    def _stream(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any):
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content=[
+                    {
+                        "type": "reasoning",
+                        "index": 0,
+                        "summary": [
+                            {"index": 0, "type": "summary_text", "text": "pienso **en voz alta**"}
+                        ],
+                    }
+                ]
+            )
+        )
+        yield ChatGenerationChunk(message=AIMessageChunk(content="hola"))
+
+    def _generate(self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any):
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="hola"))])
+
+
+def test_the_real_stream_maps_reasoning_and_tokens():
+    """El camino completo: `astream_events` real → mapper → eventos.
+
+    Los tests unitarios del mapper usan objetos falsos: este es el que de
+    verdad pasa por LangGraph, que es donde se pierden cosas.
+    """
+    import asyncio
+
+    from harness.compat import create_agent_compat
+    from harness.streaming import stream_run
+
+    async def run() -> list[Any]:
+        agent = create_agent_compat(
+            model=_FakeModel(),
+            tools=[],
+            system_prompt="eres un agente",
+            subagents=[],
+            checkpointer=None,
+            store=None,
+            interrupt_on={},
+        )
+        return [
+            ev
+            async for ev in stream_run(
+                agent,
+                {"messages": [{"role": "user", "content": "hola"}]},
+                thread_id="t1",
+                user_id="u1",
+            )
+        ]
+
+    events = asyncio.run(run())
+    kinds = [e.type for e in events]
+    assert "reasoning" in kinds, kinds
+    assert "token" in kinds, kinds
+    reasoning = next(e for e in events if e.type == "reasoning")
+    assert reasoning.text == "pienso **en voz alta**"
+    token = next(e for e in events if e.type == "token")
+    assert token.text == "hola"

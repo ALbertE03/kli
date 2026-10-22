@@ -27,11 +27,11 @@ make test        # pytest -q
 - Un test suelto: `uv run pytest tests/test_cli.py::test_x -q`.
 - Sin red: `uv run --offline …` o directamente `.venv/bin/python -m pytest -q`.
 - **Orden de verificación: lint → typecheck → test.**
-- **`make typecheck` (`mypy src`) está en rojo de base**: 7 errores preexistentes en `src/harness` (providers, models, memory, mcp/manager, plugins/tools). No son tuyos: `mypy src/cli` sí pasa limpio. No los "arregles" de paso, pero no los ignores al final.
+- **`make typecheck` (`mypy src`) pasa limpio**: la deuda de tipos se pagó (providers, models, memory, mcp/manager, plugins/tools). No la reintroduzcas: la CI lo exige.
 - **`ruff format` no se usa** (38 de 60 ficheros se reformatarían): no lo ejecutes ni lo añadas a CI.
 - No hay `[tool.ruff]`/`[tool.mypy]`: ambos usan sus defaults (mypy **no** es strict).
-- `.github/workflows/ci.yml` es una plantilla de Node/pnpm que **no corresponde a este repo Python**: ignórala y no la "arregles".
-- `uv.lock` existe en local pero está en `.gitignore` (`*.lock`).
+- `.github/workflows/ci.yml` corre `ruff` → `mypy src` → `pytest` (con `uv sync --locked`): **`uv.lock` está versionado**, así que `uv lock` si tocas `pyproject.toml`.
+- La CI exige `mypy src` **limpio** (ya no hay deuda de tipos: no la reintroduzcas).
 
 ## Tests
 
@@ -54,6 +54,9 @@ make test        # pytest -q
 - `REASONING_EFFORT` (vacío = no mandar) **cambia de endpoint**: con valor, el harness usa el **API de Responses** (`reasoning={"effort":…, "summary":"auto"}`), que es el único que transmite el pensamiento (eventos `response.reasoning_summary_text.delta` → bloque `{"type":"reasoning","summary":[…]}`). Sin valor, se usa chat completions y solo se ve si el proxy manda `delta.reasoning_content`.
 - Si el modelo debía razonar y no dice nada, `_warn_missing_reasoning` (en `streaming.py`) avisa en el log del servidor con los **tipos de bloque** que sí llegaron: así se distingue "lo perdimos nosotros" de "el proveedor no lo manda".
 - `HARNESS_ENV=prod` exige `API_KEYS`; sin ellas (dev) el usuario va por la cabecera `X-User-Id`.
+- **El exec no está aislado**: `terminal` y `python_repl` corren en el host (su cwd sí queda en la raíz del proyecto). Por eso `exec_enabled()` exige `ALLOW_UNSANDBOXED_EXEC=true` en prod, y la tarjeta de aprobación lo avisa (`UNSANDBOXED_TOOLS` en `cli/widgets.py`).
+- `python_repl` corre en un **subproceso** (`PythonRunner`): un `sys.exit()` del código no tumba la API. No hay estado entre llamadas.
+- `mypy src` está **limpio** y la CI lo exige: no lo dejes en rojo.
 
 ## CLI: reglas de la interfaz
 

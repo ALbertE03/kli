@@ -120,7 +120,9 @@ def _build(
             common["use_responses_api"] = True
     if kind == "openai":
         return KliChatOpenAI(stream_usage=stream_usage, **common)  # type: ignore[arg-type]
-    return ChatAnthropic(max_tokens=max_tokens, **common)  # type: ignore[arg-type]
+    # mypy ve el alias `max_tokens_to_sample` del campo (populate_by_name no
+    # lo sabe), por eso el ignore de call-arg.
+    return ChatAnthropic(max_tokens=max_tokens, **common)  # type: ignore[arg-type,call-arg]
 
 
 def build_chat_model(rp: ResolvedProvider) -> BaseChatModel:

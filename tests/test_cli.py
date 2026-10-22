@@ -355,6 +355,34 @@ def test_slash_command_switches_mode():
 # ---------------------------------------------------------------- búsqueda web
 
 
+def test_the_usage_event_keeps_the_cached_tokens():
+    """Los tokens de caché tienen que llegar al panel: sin ellos no se ve el ahorro."""
+
+    async def scenario(app: KliApp) -> None:
+        client = FakeClient(
+            [
+                ServerEvent(
+                    "usage",
+                    {"payload": {"input_tokens": 1200, "output_tokens": 30, "cached_tokens": 900}},
+                ),
+                ServerEvent("done", {}),
+            ]
+        )
+        app.client = client
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app.query_one("#prompt").value = "hola"
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if app.usage:
+                    break
+            assert app.usage["input_tokens"] == 1200
+            assert app.usage["cached_tokens"] == 900
+
+    _run(scenario)
+
+
 def test_web_is_off_by_default_and_the_request_omits_it():
     """Sin tocarla, la búsqueda web no se pide: el prompt va más corto."""
 

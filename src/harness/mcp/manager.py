@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain_mcp_adapters.sessions import StdioConnection, StreamableHttpConnection
 from pydantic import TypeAdapter
 
 from harness.errors import Conflict, Forbidden, InvalidConfig, NotFound
@@ -35,7 +36,9 @@ def parse_server_config(data: dict[str, Any]) -> StdioServerConfig | HttpServerC
     return result
 
 
-def _connection(cfg: StdioServerConfig | HttpServerConfig) -> dict[str, Any]:
+def _connection(
+    cfg: StdioServerConfig | HttpServerConfig,
+) -> StdioConnection | StreamableHttpConnection:
     if isinstance(cfg, StdioServerConfig):
         return {
             "transport": "stdio",

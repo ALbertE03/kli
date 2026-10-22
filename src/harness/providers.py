@@ -61,7 +61,8 @@ class ProviderRegistry:
 
     def __init__(self, settings: Settings) -> None:
         self._s = settings
-        self._custom: dict[tuple[str, str], ProviderSpec] = {}
+        # La clave es (owner, nombre): owner None = proveedor del sistema.
+        self._custom: dict[tuple[str | None, str], ProviderSpec] = {}
 
     # ------------- escritura -------------
     def add(self, owner: str, spec: ProviderSpec) -> ProviderSpec:

@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
-from harness.utils import clip, content_to_text, json_safe, split_chunk
+from harness.utils import cached_tokens, clip, content_to_text, json_safe, split_chunk
 
 log = logging.getLogger(__name__)
 
@@ -39,7 +39,12 @@ class EventMapper:
         self._reasoned: set[str] = set()  # modelos que ya soltaron su razonamiento
         self.saw_reasoning = False  # ¿ha llegado razonamiento en algún momento?
         self.block_types: set[str] = set()  # tipos de bloque que ha mandado el proveedor
-        self.usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        self.usage = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,  # parte de la entrada que sirvió de caché
+        }
 
     def _agent_for(self, parents: list[str]) -> str | None:
         for pid in reversed(parents):
@@ -99,8 +104,9 @@ class EventMapper:
                     self._reasoned.add(run_id)
                     events.append(StreamEvent(type="reasoning", agent=agent, text=reasoning))
             if usage:
-                for field in self.usage:
+                for field in ("input_tokens", "output_tokens", "total_tokens"):
                     self.usage[field] += int(usage.get(field, 0) or 0)
+                self.usage["cached_tokens"] += cached_tokens(usage)
                 events.append(StreamEvent(type="usage", agent=agent, payload=dict(self.usage)))
             return events
 

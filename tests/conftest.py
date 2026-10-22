@@ -13,6 +13,8 @@ os.environ.update(
         "API_KEYS": "",
         "HARNESS_ENV": "dev",
         "ENABLE_EXEC": "false",
+        # el exec no está aislado: los tests no lo quieren ni en dev
+        "ALLOW_UNSANDBOXED_EXEC": "false",
         "MCP_CONFIG_FILE": "",
         # clave Fernet de pruebas: el .env local puede traer otra (o ninguna)
         "SECRET_KEY": "x6hd-OGd0dHp-_p98jYkJP8GFTHM_aY5tneXL7RcxxM=",

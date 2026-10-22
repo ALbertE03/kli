@@ -243,6 +243,12 @@ En Docker tu `$HOME` queda montada en `/host`, así que cualquier carpeta tuya s
 importa con `/project import <nombre> /host/ruta/a/la/carpeta`. Para montar otra
 raíz: `KLI_HOST_DIR=/ruta/que/quieras docker compose up`.
 
+**Qué queda confinado y qué no**: las tools `fs_*` sí lo están (no salen de la
+raíz del proyecto). `terminal` y `python_repl` ejecutan en el **host**: su
+directorio de trabajo es la raíz del proyecto, pero el proceso ve la máquina
+entera. En `HARNESS_ENV=prod` no se registran salvo `ALLOW_UNSANDBOXED_EXEC=true`,
+y la tarjeta de aprobación lo dice antes de que ejecutes nada.
+
 **Skills**
 
 | comando | endpoint |
@@ -327,6 +333,7 @@ Lo imprescindible:
 | `SECRET_KEY` | clave Fernet (32 bytes url-safe base64) para cifrar lo que se guarda. Genera una con `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CHECKPOINT_BACKEND` · `STORE_BACKEND` | `memory` \| `sqlite` \| `postgres` |
 | `ENABLE_EXEC` | habilita `terminal`, `python_repl` y `run_tests` (aprobación humana) |
+| `ALLOW_UNSANDBOXED_EXEC` | en `HARNESS_ENV=prod` hace falta para registrar el exec: **no está aislado** (solo el directorio de trabajo queda confinado a la raíz del proyecto) |
 | `API_KEYS` | `clave1:alice,clave2:bob`; vacío = desarrollo, el usuario va por cabecera |
 | `KLI_USER` | usuario que manda el CLI en `X-User-Id` (por defecto `anonymous`) |
 | `KLI_API_URL` · `KLI_API_KEY` | a qué servidor se conecta el CLI y con qué clave |

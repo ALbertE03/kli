@@ -32,6 +32,11 @@ class MemoryItem(BaseModel):
     updated_at: str | None = None
 
 
+# `LongTermMemory.list` tapa el `list` builtin dentro de la clase: las
+# anotaciones que lo usan se resuelven con este alias de módulo.
+MemoryItems = list[MemoryItem]
+
+
 def _tokens(text: str) -> set[str]:
     return set(re.findall(r"\w{3,}", text.lower()))
 
@@ -73,11 +78,11 @@ class LongTermMemory:
         await self._store.aput(self._ns(user_id), key, {"text": text, "tags": tags or []})
         return key
 
-    async def list(self, user_id: str, limit: int = 100) -> list[MemoryItem]:
+    async def list(self, user_id: str, limit: int = 100) -> MemoryItems:
         items = await self._store.asearch(self._ns(user_id), limit=limit)
         return [self._to_item(i) for i in items]
 
-    async def recall(self, user_id: str, query: str, limit: int = 5) -> list[MemoryItem]:
+    async def recall(self, user_id: str, query: str, limit: int = 5) -> MemoryItems:
         """Búsqueda por solapamiento de términos: funciona con cualquier backend, sin embeddings."""
         items = [self._to_item(i) for i in await self._store.asearch(self._ns(user_id), limit=200)]
         wanted = _tokens(query)
